@@ -1,0 +1,21 @@
+{
+  "mode": "dual",
+  "voice": "zh-TW-YunJheNeural",
+  "rate": "-5%",
+  "pitch": "-2Hz",
+  "pad_time": 0.5,
+  "speaker_a": {
+    "name": "主持人 A",
+    "color": "#06b6d4",
+    "voice": "zh-TW-YunJheNeural",
+    "rate": "0%",
+    "pitch": "0Hz"
+  },
+  "speaker_b": {
+    "name": "專家 B",
+    "color": "#8b5cf6",
+    "voice": "zh-TW-HsiaoChenNeural",
+    "rate": "+5%",
+    "pitch": "-2Hz"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "style_preset": "cc",
+  "font_name": "Microsoft JhengHei",
+  "font_color": "white",
+  "bg_style": "outline",
+  "font_size": 32,
+  "bg_opacity": 0.5,
+  "bottom_pos": 40,
+  "max_width": 85,
+  "embed": true,
+  "mode": "embed"
+}
