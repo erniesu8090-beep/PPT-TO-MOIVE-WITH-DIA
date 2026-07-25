@@ -2,6 +2,6 @@
   "show_page_number": true,
   "bg_color": "#0e607c",
   "font_size": 20,
-  "show_version_badge": true,
+  "show_version_badge": false,
   "version_text": "SLIDE EDITION v2.4.0 (2026/07/25)"
 }
