@@ -1,9 +1,11 @@
+import os
+import sys
+sys.modules['aiodns'] = None  # Prevent broken aiodns on Windows
+
 import http.server
 import json
 import urllib.parse
 import subprocess
-import os
-import sys
 import pathlib
 import asyncio
 import edge_tts
@@ -402,9 +404,11 @@ async def generate_page_tts(num, text, vs):
     turns = parse_dialogue_turns(text)
 
     def norm_param(val, default):
-        v = str(val or default).strip()
-        if v and not v.startswith("+") and not v.startswith("-"):
-            return "+" + v
+        v = str(val if val is not None else default).strip()
+        if not v or v in ["0", "0%", "+0%", "-0%", "0Hz", "+0Hz", "-0Hz"]:
+            return None
+        if not v.startswith("+") and not v.startswith("-"):
+            v = "+" + v
         return v
 
     if mode == "dual" or (len(turns) > 1 and any(t["speaker"] == "B" for t in turns)):
@@ -419,15 +423,21 @@ async def generate_page_tts(num, text, vs):
             turn_file = OUT_DIR / f"page-{num:02d}-turn-{idx:02d}.mp3"
             for attempt in range(3):
                 try:
+                    kwargs = {}
+                    if attempt < 2:
+                        if rate: kwargs["rate"] = rate
+                        if pitch: kwargs["pitch"] = pitch
+                    if proxy:
+                        kwargs["proxy"] = proxy
                     connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-                    communicate = edge_tts.Communicate(turn["text"], voice, rate=rate, pitch=pitch, proxy=proxy, connector=connector)
+                    communicate = edge_tts.Communicate(turn["text"], voice, **kwargs, connector=connector)
                     await communicate.save(str(turn_file))
                     turn_files.append(turn_file)
                     break
                 except Exception as e:
                     if attempt == 2:
                         raise e
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(1.5)
 
         turn_durations = [get_audio_duration(tf) for tf in turn_files]
         meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
@@ -464,13 +474,20 @@ async def generate_page_tts(num, text, vs):
         pitch = norm_param(vs.get("pitch"), "-2Hz")
         for attempt in range(3):
             try:
+                kwargs = {}
+                if attempt < 2:
+                    if rate: kwargs["rate"] = rate
+                    if pitch: kwargs["pitch"] = pitch
+                if proxy:
+                    kwargs["proxy"] = proxy
                 connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-                communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, proxy=proxy, connector=connector)
+                communicate = edge_tts.Communicate(text, voice, **kwargs, connector=connector)
                 await communicate.save(str(out_file))
                 return out_file
             except Exception as e:
                 if attempt == 2:
                     raise e
+                await asyncio.sleep(1.5)
                 await asyncio.sleep(1)
         return out_file
 
