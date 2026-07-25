@@ -28,11 +28,14 @@ def get_audio_duration(file_path):
         "ffprobe", "-v", "quiet", "-print_format", "json",
         "-show_format", "-show_streams", str(file_path)
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        return 5.0 # Fallback
-    data = json.loads(res.stdout)
-    return float(data["format"]["duration"])
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
+        if res.returncode != 0 or not res.stdout or not res.stdout.strip():
+            return 5.0
+        data = json.loads(res.stdout)
+        return float(data["format"]["duration"])
+    except Exception:
+        return 5.0
 
 # Helper to get Git version and update time
 def get_git_info():
@@ -295,26 +298,38 @@ def calculate_dynamic_timings():
         else:
             audio_dur = len(text_clean) * 0.15
 
+        meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
+        turn_durations = []
+        if meta_file.exists():
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f_meta:
+                    meta = json.load(f_meta)
+                    turn_durations = meta.get("turn_durations", [])
+            except Exception:
+                pass
+
         turns = parse_dialogue_turns(text_clean)
         
         all_clauses = []
-        total_chars = sum(len(t["text"]) for t in turns)
-        if total_chars == 0:
-            total_chars = 1
+        total_chars = sum(len(t["text"]) for t in turns) or 1
 
         current_time = 0.0
-        for t in turns:
+        for idx_turn, t in enumerate(turns):
             spk = t["speaker"]
             spk_name = speaker_a_name if spk == "A" else speaker_b_name
             turn_text = t["text"]
             
+            if idx_turn < len(turn_durations) and turn_durations[idx_turn] > 0:
+                turn_dur = turn_durations[idx_turn]
+            else:
+                turn_dur = audio_dur * (len(turn_text) / total_chars)
+
             clauses_text = re.findall(r'[^，。；：？！、\s]+[，。；：？！、\s]*', turn_text)
             clauses_text = [c.strip() for c in clauses_text if c.strip()]
             if not clauses_text:
                 clauses_text = [turn_text]
                 
             turn_chars = sum(len(c) for c in clauses_text) or 1
-            turn_dur = audio_dur * (len(turn_text) / total_chars)
 
             for c in clauses_text:
                 c_len = len(c)
@@ -413,6 +428,14 @@ async def generate_page_tts(num, text, vs):
                     if attempt == 2:
                         raise e
                     await asyncio.sleep(1)
+
+        turn_durations = [get_audio_duration(tf) for tf in turn_files]
+        meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
+        try:
+            with open(meta_file, "w", encoding="utf-8") as f_m:
+                json.dump({"turn_durations": turn_durations}, f_m, indent=2)
+        except Exception:
+            pass
 
         if len(turn_files) == 1:
             if out_file.exists():
@@ -762,11 +785,14 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         srt_filename = f"{base_stem}.srt"
                             
                     log_sse("\n🎉 恭喜！影片全部製作成功！")
-                    log_sse(f"  已輸出無字幕版：{WORKSPACE_DIR / 'MovieOutput' / clean_video_name}")
-                    log_sse(f"  已輸出內嵌字幕版：{WORKSPACE_DIR / 'MovieOutput' / final_video_name}")
-                    log_sse(f"  已輸出字幕檔案：{WORKSPACE_DIR / 'MovieOutput' / srt_filename}")
+                    if final_video_name:
+                        log_sse(f"  已輸出影片：{WORKSPACE_DIR / 'MovieOutput' / final_video_name}")
+                    if clean_video_name:
+                        log_sse(f"  已輸出無字幕版：{WORKSPACE_DIR / 'MovieOutput' / clean_video_name}")
+                    if srt_filename:
+                        log_sse(f"  已輸出字幕檔案：{WORKSPACE_DIR / 'MovieOutput' / srt_filename}")
                     
-                    self.wfile.write(f"data: {json.dumps({'complete': True, 'video_name': final_video_name, 'clean_video_name': clean_video_name, 'srt_name': srt_filename}, ensure_ascii=False)}\n\n".encode('utf-8'))
+                    self.wfile.write(f"data: {json.dumps({'complete': True, 'video_name': final_video_name or '', 'clean_video_name': clean_video_name or '', 'srt_name': srt_filename or ''}, ensure_ascii=False)}\n\n".encode('utf-8'))
                     self.wfile.flush()
             except Exception as e:
                 log_sse(f"錯誤: {str(e)}")

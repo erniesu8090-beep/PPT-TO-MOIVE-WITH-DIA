@@ -200,6 +200,11 @@ def build():
 <head>
 <meta charset="utf-8" />
 <title>雙人對話式動態簡報影片播放器</title>
+<script>
+  if (new URLSearchParams(window.location.search).get('render') === 'true') {{
+    document.documentElement.classList.add('render-mode');
+  }}
+</script>
 <style>
   @font-face {{
     font-family: 'GenSeki TW';
@@ -267,14 +272,10 @@ def build():
   }}
   .subtitle.show {{ opacity: 1; }}
 
-  /* 雙人對話名牌區 */
+  /* 雙人對話名牌區 (已取消顯示左右人物燈號) */
   .dialogue-stage {{
-    position: fixed; bottom: 105px; left: 48px; right: 48px;
-    display: flex; justify-content: space-between; align-items: center;
-    pointer-events: none; z-index: 90;
-    transition: opacity 0.3s ease;
+    display: none !important;
   }}
-  .dialogue-stage.hidden {{ display: none !important; }}
 
   .speaker-card {{
     display: flex; align-items: center; gap: 12px;
@@ -339,7 +340,7 @@ def build():
     color: var(--gold); transition: all 0.3s ease;
   }}
   .start-screen:hover .play {{ background: var(--gold); color: var(--ink); transform: scale(1.05); }}
-  .start-screen.hidden {{ display: none; }}
+  .start-screen.hidden, html.render-mode .start-screen, body.render-mode .start-screen {{ display: none !important; }}
 
   /* 進度條 */
   .progress {{
@@ -461,30 +462,16 @@ function tick() {{
   if (activeClause) {{
     if (sub.dataset.text !== activeClause.text) {{
       sub.dataset.text = activeClause.text;
-      let spkPrefix = "";
-      
       if (DUAL_CONFIG.mode === "dual" || (activeClause.speaker && activeClause.speaker !== 'A')) {{
         const isB = activeClause.speaker === "B";
-        const spkName = activeClause.speaker_name || (isB ? (DUAL_CONFIG.speaker_b ? DUAL_CONFIG.speaker_b.name : '專家 B') : (DUAL_CONFIG.speaker_a ? DUAL_CONFIG.speaker_a.name : '主持人 A'));
         const spkColor = isB ? (DUAL_CONFIG.speaker_b ? DUAL_CONFIG.speaker_b.color : '#8b5cf6') : (DUAL_CONFIG.speaker_a ? DUAL_CONFIG.speaker_a.color : '#06b6d4');
         
-        spkPrefix = `<span style="background:${{spkColor}}; color:#000; font-weight:900; padding:2px 8px; border-radius:4px; margin-right:8px; display:inline-block; vertical-align:middle; font-size:0.85em; box-shadow: 0 2px 6px rgba(0,0,0,0.4);">${{spkName}}</span>`;
-        
-        if (dialogueStage && speakerCardA && speakerCardB) {{
-          dialogueStage.classList.remove('hidden');
-          if (isB) {{
-            speakerCardB.classList.add('speaking');
-            speakerCardA.classList.remove('speaking');
-          }} else {{
-            speakerCardA.classList.add('speaking');
-            speakerCardB.classList.remove('speaking');
-          }}
-        }}
-        sub.innerHTML = `${{spkPrefix}}<span style="color:${{spkColor}}; text-shadow: -1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 2px 8px rgba(0,0,0,0.9);">${{activeClause.text}}</span>`;
+        sub.innerHTML = `<span style="color:${{spkColor}}; text-shadow: -1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 2px 8px rgba(0,0,0,0.9);">${{activeClause.text}}</span>`;
       }} else {{
         sub.innerHTML = activeClause.text;
       }}
-    sub.classList.add('show');
+      sub.classList.add('show');
+    }}
   }} else {{
     sub.innerHTML = "";
     sub.classList.remove('show');
@@ -520,10 +507,8 @@ if (isRenderMode) {{
     document.body.classList.add('render-no-embed');
   }}
   startScreen.classList.add('hidden');
-  setTimeout(() => {{
-    showSlide(0);
-    rafId = requestAnimationFrame(tick);
-  }}, 500);
+  showSlide(0);
+  rafId = requestAnimationFrame(tick);
 }}
 </script>
 

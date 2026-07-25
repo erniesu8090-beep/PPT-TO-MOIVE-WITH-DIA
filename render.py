@@ -327,6 +327,8 @@ def run_render():
         if sub_mode == "srt":
             print(f"  輸出字幕檔案：{os.path.abspath(srt_path)}")
         print(f"OUTPUT_FILENAME:{output_path.name}")
+        if sub_mode == "srt":
+            print(f"OUTPUT_SRT_FILENAME:{srt_path.name}")
         
     # 6. 清理暫存音訊檔
     try:
