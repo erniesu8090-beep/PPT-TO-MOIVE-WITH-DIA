@@ -7,7 +7,7 @@
   "speaker_a": {
     "name": "主持人 A",
     "color": "#06b6d4",
-    "voice": "zh-CN-YunjianNeural",
+    "voice": "zh-TW-YunJheNeural",
     "rate": "0%",
     "pitch": "0Hz"
   },

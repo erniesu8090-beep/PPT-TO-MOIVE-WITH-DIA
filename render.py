@@ -229,8 +229,8 @@ def run_render():
                 color_map = {
                     "white": "&H00FFFFFF",
                     "yellow": "&H0000FFFF",
-                    "cyan": "&H00FFFF00",
-                    "green": "&H0000FF00",
+                    "cyan": "&H00FFA940",
+                    "green": "&H0011D9A0",
                     "gray": "&H00CCCCCC"
                 }
                 primary_colour = color_map.get(font_color, "&H00FFFFFF")

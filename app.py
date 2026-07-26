@@ -583,14 +583,14 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     "voice": "zh-TW-YunJheNeural",
                     "rate": "-5%",
                     "pitch": "-2Hz",
-                    "color": "#06b6d4"
+                    "color": "#40a9ff"
                 },
                 "speaker_b": {
                     "name": "對談者 B",
                     "voice": "zh-TW-HsiaoChenNeural",
                     "rate": "-5%",
                     "pitch": "-2Hz",
-                    "color": "#8b5cf6"
+                    "color": "#fadb14"
                 }
             }
             voice_path = WORKSPACE_DIR / "voice_settings.json"
@@ -691,8 +691,8 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     "rate": "-5%",
                     "pitch": "-2Hz",
                     "pad_time": 1.5,
-                    "speaker_a": {"name": "主持人 A", "voice": "zh-TW-YunJheNeural", "rate": "-5%", "pitch": "-2Hz", "color": "#06b6d4"},
-                    "speaker_b": {"name": "對談者 B", "voice": "zh-TW-HsiaoChenNeural", "rate": "-5%", "pitch": "-2Hz", "color": "#8b5cf6"}
+                    "speaker_a": {"name": "主持人 A", "voice": "zh-TW-YunJheNeural", "rate": "-5%", "pitch": "-2Hz", "color": "#40a9ff"},
+                    "speaker_b": {"name": "對談者 B", "voice": "zh-TW-HsiaoChenNeural", "rate": "-5%", "pitch": "-2Hz", "color": "#fadb14"}
                 }
                 voice_path = WORKSPACE_DIR / "voice_settings.json"
                 if voice_path.exists():
@@ -883,8 +883,8 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "rate": "-5%",
                 "pitch": "-2Hz",
                 "pad_time": 1.5,
-                "speaker_a": {"name": "主持人 A", "voice": "zh-TW-YunJheNeural", "rate": "-5%", "pitch": "-2Hz", "color": "#06b6d4"},
-                "speaker_b": {"name": "對談者 B", "voice": "zh-TW-HsiaoChenNeural", "rate": "-5%", "pitch": "-2Hz", "color": "#8b5cf6"}
+                "speaker_a": {"name": "主持人 A", "voice": "zh-TW-YunJheNeural", "rate": "-5%", "pitch": "-2Hz", "color": "#40a9ff"},
+                "speaker_b": {"name": "對談者 B", "voice": "zh-TW-HsiaoChenNeural", "rate": "-5%", "pitch": "-2Hz", "color": "#fadb14"}
             }
             if voice_path.exists():
                 try:
@@ -943,14 +943,14 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "voice": "zh-TW-YunJheNeural",
                 "rate": "-5%",
                 "pitch": "-2Hz",
-                "color": "#06b6d4"
+                "color": "#40a9ff"
             })
             speaker_b = payload.get("speaker_b", {
                 "name": "對談者 B",
                 "voice": "zh-TW-HsiaoChenNeural",
                 "rate": "-5%",
                 "pitch": "-2Hz",
-                "color": "#8b5cf6"
+                "color": "#fadb14"
             })
 
             vs_data = {
@@ -1708,17 +1708,41 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                     <!-- Dual Voice Mode UI -->
                     <div id="dualVoicePanel" style="display: none; background: rgba(0,0,0,0.25); padding: 14px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 14px;">
+                        
+                        <!-- 雙人高對比推薦配色預設面板 -->
+                        <div style="background: rgba(255,255,255,0.05); padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 11px;">
+                            <div style="color: #aaa; font-weight: 600; margin-bottom: 6px;">✨ 推薦黑底高對比雙人配色組合：</div>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button type="button" onclick="setDualColors('#40a9ff', '#fadb14')" style="padding: 3px 8px; font-size: 11px; background: rgba(64,169,255,0.15); color: #fff; border: 1px solid #40a9ff; border-radius: 4px; cursor: pointer;">
+                                    <span style="color: #40a9ff;">■ A 亮藍</span> + <span style="color: #fadb14;">■ B 明黃</span> (推薦)
+                                </button>
+                                <button type="button" onclick="setDualColors('#ffffff', '#fadb14')" style="padding: 3px 8px; font-size: 11px; background: rgba(255,255,255,0.15); color: #fff; border: 1px solid #ffffff; border-radius: 4px; cursor: pointer;">
+                                    <span style="color: #ffffff;">■ A 純白</span> + <span style="color: #fadb14;">■ B 明黃</span>
+                                </button>
+                                <button type="button" onclick="setDualColors('#40a9ff', '#a0d911')" style="padding: 3px 8px; font-size: 11px; background: rgba(160,217,17,0.15); color: #fff; border: 1px solid #a0d911; border-radius: 4px; cursor: pointer;">
+                                    <span style="color: #40a9ff;">■ A 亮藍</span> + <span style="color: #a0d911;">■ B 淺綠</span>
+                                </button>
+                            </div>
+                        </div>
+
                         <!-- Speaker A Box -->
                         <div style="margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px dashed var(--border-color);">
-                            <div style="font-size: 12px; font-weight: bold; color: #06b6d4; margin-bottom: 8px;">🔷 角色 A (主講人 / Host A)</div>
+                            <div style="font-size: 12px; font-weight: bold; color: #40a9ff; margin-bottom: 8px;">🔷 角色 A (主講人 / Host A)</div>
                             <div class="form-row" style="margin-bottom: 8px;">
                                 <div class="form-group">
                                     <label for="spkA_name">角色名稱</label>
                                     <input type="text" id="spkA_name" value="主持人 A" style="padding: 6px 10px; font-size: 12px;">
                                 </div>
-                                <div class="form-group" style="flex: 0.4;">
+                                <div class="form-group" style="flex: 0.5;">
                                     <label for="spkA_color">代表色</label>
-                                    <input type="color" id="spkA_color" value="#06b6d4" style="height: 32px; border: none; background: transparent; cursor: pointer; width: 100%;">
+                                    <div style="display: flex; gap: 6px; align-items: center;">
+                                        <input type="color" id="spkA_color" value="#40a9ff" style="height: 32px; border: none; background: transparent; cursor: pointer; width: 40px;">
+                                        <div style="display: flex; gap: 3px;">
+                                            <span onclick="document.getElementById('spkA_color').value='#40a9ff'" style="width: 18px; height: 18px; background: #40a9ff; border-radius: 3px; cursor: pointer; display: inline-block;" title="亮藍"></span>
+                                            <span onclick="document.getElementById('spkA_color').value='#ffffff'" style="width: 18px; height: 18px; background: #ffffff; border-radius: 3px; cursor: pointer; display: inline-block;" title="純白"></span>
+                                            <span onclick="document.getElementById('spkA_color').value='#fadb14'" style="width: 18px; height: 18px; background: #fadb14; border-radius: 3px; cursor: pointer; display: inline-block;" title="明黃"></span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="form-group" style="margin-bottom: 8px;">
@@ -1759,15 +1783,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                         <!-- Speaker B Box -->
                         <div>
-                            <div style="font-size: 12px; font-weight: bold; color: #8b5cf6; margin-bottom: 8px;">💜 角色 B (對談者 / Guest B)</div>
+                            <div style="font-size: 12px; font-weight: bold; color: #fadb14; margin-bottom: 8px;">💛 角色 B (對談者 / Guest B)</div>
                             <div class="form-row" style="margin-bottom: 8px;">
                                 <div class="form-group">
                                     <label for="spkB_name">角色名稱</label>
                                     <input type="text" id="spkB_name" value="專家 B" style="padding: 6px 10px; font-size: 12px;">
                                 </div>
-                                <div class="form-group" style="flex: 0.4;">
+                                <div class="form-group" style="flex: 0.5;">
                                     <label for="spkB_color">代表色</label>
-                                    <input type="color" id="spkB_color" value="#8b5cf6" style="height: 32px; border: none; background: transparent; cursor: pointer; width: 100%;">
+                                    <div style="display: flex; gap: 6px; align-items: center;">
+                                        <input type="color" id="spkB_color" value="#fadb14" style="height: 32px; border: none; background: transparent; cursor: pointer; width: 40px;">
+                                        <div style="display: flex; gap: 3px;">
+                                            <span onclick="document.getElementById('spkB_color').value='#fadb14'" style="width: 18px; height: 18px; background: #fadb14; border-radius: 3px; cursor: pointer; display: inline-block;" title="明黃"></span>
+                                            <span onclick="document.getElementById('spkB_color').value='#a0d911'" style="width: 18px; height: 18px; background: #a0d911; border-radius: 3px; cursor: pointer; display: inline-block;" title="淺綠"></span>
+                                            <span onclick="document.getElementById('spkB_color').value='#ff85c0'" style="width: 18px; height: 18px; background: #ff85c0; border-radius: 3px; cursor: pointer; display: inline-block;" title="粉紅"></span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="form-group" style="margin-bottom: 8px;">
@@ -1859,14 +1890,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label for="fontColor">字體顏色</label>
+                                <label for="fontColor">字體顏色 <span style="font-size: 11px; color: #888;">(黑底建議高明度)</span></label>
                                 <select id="fontColor">
-                                    <option value="white">白色 (White)</option>
-                                    <option value="yellow">黃色 (Yellow)</option>
-                                    <option value="cyan">青色 (Cyan)</option>
-                                    <option value="green">綠色 (Green)</option>
-                                    <option value="gray">灰色 (Gray)</option>
+                                    <option value="white">白色 (White - 最推薦)</option>
+                                    <option value="yellow">明黃 (Yellow - 對比最高)</option>
+                                    <option value="cyan">淺青 (Cyan - 高明度)</option>
+                                    <option value="green">淺綠 (Light Green)</option>
+                                    <option value="gray">淺灰 (Light Gray)</option>
                                 </select>
+                                <div style="font-size: 11px; color: #aaa; margin-top: 4px;">
+                                    💡 提示：黑底請避免深藍、深紅或高飽和螢光色。
+                                </div>
                             </div>
                             <div class="form-group">
                                 <label for="bgStyle">背景樣式</label>
@@ -2265,12 +2299,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             // 1. Font Family
             previewText.style.fontFamily = `"${fontName}", 'PingFang TC', 'Microsoft JhengHei', sans-serif`;
             
-            // 2. Font Color
+            // 2. Font Color (避開刺眼螢光色，使用舒服的高明度對比色)
             const colorMap = {
                 white: '#ffffff',
                 yellow: '#ffff00',
-                cyan: '#00ffff',
-                green: '#00ff00',
+                cyan: '#40a9ff',
+                green: '#a0d911',
                 gray: '#cccccc'
             };
             previewText.style.color = colorMap[fontColor] || '#ffffff';
@@ -2323,6 +2357,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         document.getElementById('fontName').onchange = updateSubtitlePreview;
         document.getElementById('fontColor').onchange = updateSubtitlePreview;
         document.getElementById('bgStyle').onchange = updateSubtitlePreview;
+
+        function setDualColors(colorA, colorB) {
+            const elA = document.getElementById('spkA_color');
+            const elB = document.getElementById('spkB_color');
+            if (elA) elA.value = colorA;
+            if (elB) elB.value = colorB;
+            showToast("已更新雙人高對比配色！");
+        }
 
         // Show toast feedback
         function showToast(msg = "儲存成功！") {

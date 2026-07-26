@@ -15,8 +15,8 @@ def build():
     # Load voice settings
     voice_settings = {
         "mode": "single",
-        "speaker_a": {"name": "主持人 A", "color": "#06b6d4"},
-        "speaker_b": {"name": "對談者 B", "color": "#8b5cf6"}
+        "speaker_a": {"name": "主持人 A", "color": "#40a9ff"},
+        "speaker_b": {"name": "對談者 B", "color": "#fadb14"}
     }
     voice_path = Path("voice_settings.json")
     if voice_path.exists():
@@ -122,8 +122,8 @@ def build():
     color_map = {
         "white": "#ffffff",
         "yellow": "#ffff00",
-        "cyan": "#00ffff",
-        "green": "#00ff00",
+        "cyan": "#40a9ff",
+        "green": "#a0d911",
         "gray": "#cccccc"
     }
     color_val = color_map.get(font_color, "#ffffff")
@@ -166,9 +166,9 @@ def build():
     spk_a = voice_settings.get("speaker_a", {})
     spk_b = voice_settings.get("speaker_b", {})
     spk_a_name = spk_a.get("name", "主持人 A")
-    spk_a_color = spk_a.get("color", "#06b6d4")
+    spk_a_color = spk_a.get("color", "#40a9ff")
     spk_b_name = spk_b.get("name", "對談者 B")
-    spk_b_color = spk_b.get("color", "#8b5cf6")
+    spk_b_color = spk_b.get("color", "#fadb14")
 
     # Serialize timings to JS string
     pages_js = []
@@ -464,7 +464,7 @@ function tick() {{
       sub.dataset.text = activeClause.text;
       if (DUAL_CONFIG.mode === "dual" || (activeClause.speaker && activeClause.speaker !== 'A')) {{
         const isB = activeClause.speaker === "B";
-        const spkColor = isB ? (DUAL_CONFIG.speaker_b ? DUAL_CONFIG.speaker_b.color : '#8b5cf6') : (DUAL_CONFIG.speaker_a ? DUAL_CONFIG.speaker_a.color : '#06b6d4');
+        const spkColor = isB ? (DUAL_CONFIG.speaker_b ? DUAL_CONFIG.speaker_b.color : '#fadb14') : (DUAL_CONFIG.speaker_a ? DUAL_CONFIG.speaker_a.color : '#40a9ff');
         
         sub.innerHTML = `<span style="color:${{spkColor}}; text-shadow: -1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 2px 8px rgba(0,0,0,0.9);">${{activeClause.text}}</span>`;
       }} else {{

@@ -578,7 +578,7 @@ const PAGES = [
     ]
   }
 ];
-const DUAL_CONFIG = {"mode": "dual", "speaker_a": {"name": "主持人 A", "color": "#06b6d4", "voice": "zh-CN-YunjianNeural", "rate": "0%", "pitch": "0Hz"}, "speaker_b": {"name": "專家 B", "color": "#8b5cf6", "voice": "zh-TW-HsiaoChenNeural", "rate": "+5%", "pitch": "-2Hz"}, "voice": "zh-TW-YunJheNeural", "rate": "-5%", "pitch": "-2Hz", "pad_time": 0.5};
+const DUAL_CONFIG = {"mode": "dual", "speaker_a": {"name": "主持人 A", "color": "#40a9ff", "voice": "zh-CN-YunjianNeural", "rate": "0%", "pitch": "0Hz"}, "speaker_b": {"name": "專家 B", "color": "#fadb14", "voice": "zh-TW-HsiaoChenNeural", "rate": "+5%", "pitch": "-2Hz"}, "voice": "zh-TW-YunJheNeural", "rate": "-5%", "pitch": "-2Hz", "pad_time": 0.5};
 const EMBED_SUBTITLES = true;
 
 const TOTAL_DUR = PAGES.reduce((sum, p) => sum + p.dur, 0);
@@ -656,7 +656,7 @@ function tick() {
       sub.dataset.text = activeClause.text;
       if (DUAL_CONFIG.mode === "dual" || (activeClause.speaker && activeClause.speaker !== 'A')) {
         const isB = activeClause.speaker === "B";
-        const spkColor = isB ? (DUAL_CONFIG.speaker_b ? DUAL_CONFIG.speaker_b.color : '#8b5cf6') : (DUAL_CONFIG.speaker_a ? DUAL_CONFIG.speaker_a.color : '#06b6d4');
+        const spkColor = isB ? (DUAL_CONFIG.speaker_b ? DUAL_CONFIG.speaker_b.color : '#fadb14') : (DUAL_CONFIG.speaker_a ? DUAL_CONFIG.speaker_a.color : '#40a9ff');
         
         sub.innerHTML = `<span style="color:${spkColor}; text-shadow: -1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 2px 8px rgba(0,0,0,0.9);">${activeClause.text}</span>`;
       } else {
