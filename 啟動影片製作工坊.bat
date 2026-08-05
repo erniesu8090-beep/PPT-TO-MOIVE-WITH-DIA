@@ -1,6 +1,5 @@
 @echo off
 title 影片製作工坊 - 啟動器
-chcp 65001 > nul
 
 echo ===================================================
 echo   影片製作工坊 (Traditional Chinese GUI)

@@ -69,12 +69,51 @@ def run_render():
     embed_param = "true" if sub_mode == "embed" else "false"
     print(f"\n--- 3. 執行 Playwright 錄製網頁畫面 (字幕內嵌: {embed_param}) ---")
     env = os.environ.copy()
-    temp_node_modules = os.path.join(env.get("TEMP", "C:\\Temp"), "cvs-render", "node_modules")
-    env["NODE_PATH"] = temp_node_modules
+    temp_dir = Path(env.get("TEMP", "C:\\Temp")) / "cvs-render"
+    temp_node_modules = temp_dir / "node_modules"
+    env["NODE_PATH"] = str(temp_node_modules)
     
+    # 檢查 Node.js 是否已安裝
+    if not shutil.which("node"):
+        raise Exception("系統中未偵測到 Node.js，無法錄製影片！請先下載並安裝 Node.js： https://nodejs.org/")
+
+    use_shell = os.name == "nt"
+
+    # 檢查與安裝 Playwright Node 模組
+    try:
+        subprocess.run(["node", "-e", "require('playwright')"], env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=use_shell)
+        print("  ✓ 偵測到 Playwright 模組已安裝")
+    except subprocess.CalledProcessError:
+        print("  ⚠️ 未在暫存目錄偵測到 Playwright，正在開始自動安裝 (可能需要幾分鐘)...")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        pkg_json = temp_dir / "package.json"
+        if not pkg_json.exists():
+            with open(pkg_json, "w", encoding="utf-8") as f:
+                f.write('{"private": true, "dependencies": {"playwright": "^1.40.0"}}')
+        try:
+            # 優先嘗試在 temp_dir 執行 npm install
+            subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=str(temp_dir), check=True, shell=use_shell)
+            print("  ✓ Playwright 模組安裝成功！")
+        except Exception as e:
+            raise Exception(f"自動安裝 Playwright 失敗，請手動執行 'npm install'！錯誤資訊: {e}")
+
+    # 檢查並下載 Chromium 瀏覽器
+    try:
+        # 測試是否可以成功載入並啟動 chromium
+        test_script = "const { chromium } = require('playwright'); (async () => { const b = await chromium.launch(); await b.close(); })().catch(e => { process.exit(1); })"
+        subprocess.run(["node", "-e", test_script], env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=use_shell)
+        print("  ✓ 偵測到 Playwright Chromium 瀏覽器已下載")
+    except subprocess.CalledProcessError:
+        print("  ⚠️ 未偵測到 Playwright 瀏覽器核心，正在下載 Chromium 瀏覽器...")
+        try:
+            subprocess.run(["npx", "playwright", "install", "chromium"], env=env, cwd=str(temp_dir), check=True, shell=use_shell)
+            print("  ✓ Chromium 瀏覽器下載成功！")
+        except Exception as e:
+            raise Exception(f"自動下載 Chromium 瀏覽器失敗，請嘗試手動執行 'npx playwright install chromium'。錯誤資訊: {e}")
+
     print(f"  Node.js 將使用模組路徑：{temp_node_modules}")
     cmd_node = ["node", "record.cjs", f"--embed={embed_param}"]
-    subprocess.run(cmd_node, check=True, env=env)
+    subprocess.run(cmd_node, check=True, env=env, shell=use_shell)
     
     # 4. 尋找剛剛生成的 webm 錄製檔
     print("\n--- 4. 尋找錄製的 WebM 影片檔 ---")
