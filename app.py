@@ -244,19 +244,6 @@ def parse_dialogue_turns(text):
         else:
             spk = 'A'
 
-        start_pos = m.end()
-        end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        turn_text = text[start_pos:end_pos].strip()
-        
-        if turn_text.startswith("："):
-            turn_text = turn_text[1:].strip()
-            
-        if turn_text:
-            turns.append({'speaker': spk, 'text': turn_text})
-
-    return turns if turns else [{'speaker': 'A', 'text': text.strip()}]
-
-# Helper to calculate dynamic timings
 def calculate_dynamic_timings():
     cleaned_path = WORKSPACE_DIR / "口白_cleaned.json"
     if not cleaned_path.exists():
@@ -302,48 +289,60 @@ def calculate_dynamic_timings():
 
         meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
         turn_durations = []
+        exact_clauses = []
         if meta_file.exists():
             try:
                 with open(meta_file, "r", encoding="utf-8") as f_meta:
                     meta = json.load(f_meta)
                     turn_durations = meta.get("turn_durations", [])
+                    exact_clauses = meta.get("exact_clauses", [])
             except Exception:
                 pass
 
-        turns = parse_dialogue_turns(text_clean)
-        
-        all_clauses = []
-        total_chars = sum(len(t["text"]) for t in turns) or 1
+        if exact_clauses:
+            all_clauses = exact_clauses
+        else:
+            turns = parse_dialogue_turns(text_clean)
+            all_clauses = []
+            total_chars = sum(len(t["text"]) for t in turns) or 1
 
-        current_time = 0.0
-        for idx_turn, t in enumerate(turns):
-            spk = t["speaker"]
-            spk_name = speaker_a_name if spk == "A" else speaker_b_name
-            turn_text = t["text"]
-            
-            if idx_turn < len(turn_durations) and turn_durations[idx_turn] > 0:
-                turn_dur = turn_durations[idx_turn]
-            else:
-                turn_dur = audio_dur * (len(turn_text) / total_chars)
-
-            clauses_text = re.findall(r'[^，。；：？！、\s]+[，。；：？！、\s]*', turn_text)
-            clauses_text = [c.strip() for c in clauses_text if c.strip()]
-            if not clauses_text:
-                clauses_text = [turn_text]
+            current_time = 0.0
+            for idx_turn, t in enumerate(turns):
+                spk = t["speaker"]
+                spk_name = speaker_a_name if spk == "A" else speaker_b_name
+                turn_text = t["text"]
                 
-            turn_chars = sum(len(c) for c in clauses_text) or 1
+                if idx_turn < len(turn_durations) and turn_durations[idx_turn] > 0:
+                    turn_dur = turn_durations[idx_turn]
+                else:
+                    turn_dur = audio_dur * (len(turn_text) / total_chars)
 
-            for c in clauses_text:
-                c_len = len(c)
-                c_dur = turn_dur * (c_len / turn_chars)
-                all_clauses.append({
-                    "text": c,
-                    "start": round(current_time, 2),
-                    "end": round(current_time + c_dur, 2),
-                    "speaker": spk,
-                    "speaker_name": spk_name
-                })
-                current_time += c_dur
+                clauses_text = re.findall(r'[^，。；：？！、\s]+[，。；：？！、\s]*', turn_text)
+                clauses_text = [c.strip() for c in clauses_text if c.strip()]
+                if not clauses_text:
+                    clauses_text = [turn_text]
+
+                clause_weights = []
+                for c in clauses_text:
+                    w = float(len(c))
+                    if any(p in c for p in ["。", "！", "？", "!", "?"]):
+                        w += 3.5
+                    elif any(p in c for p in ["，", "；", "：", ",", ";"]):
+                        w += 1.8
+                    clause_weights.append(max(w, 0.5))
+
+                total_weight = sum(clause_weights) or 1.0
+
+                for c, w in zip(clauses_text, clause_weights):
+                    c_dur = turn_dur * (w / total_weight)
+                    all_clauses.append({
+                        "text": c,
+                        "start": round(current_time, 2),
+                        "end": round(current_time + c_dur, 2),
+                        "speaker": spk,
+                        "speaker_name": spk_name
+                    })
+                    current_time += c_dur
 
         dur = math.ceil(audio_dur + pad_time)
         
@@ -370,14 +369,13 @@ def calculate_dynamic_timings():
             "audio_dur": p["audio_dur"],
             "dur": p["dur"]
         })
-    with open(WORKSPACE_DIR / "timings.json", "w", encoding="utf-8") as f_simp:
-        json.dump(simple_timings, f_simp, ensure_ascii=False, indent=2)
+    with open(WORKSPACE_DIR / "timings.json", "w", encoding="utf-8") as f_simple:
+        json.dump(simple_timings, f_simple, ensure_ascii=False, indent=2)
         
     return pages_timings
 
-# Async edge-tts generator supporting single & dual modes
-async def generate_single_tts(num, text, voice, rate, pitch):
-    # Compatibility wrapper for single speaker
+# Compatibility wrapper for single speaker
+async def generate_tts(num, text, voice="zh-TW-YunJheNeural", rate="-5%", pitch="-2Hz"):
     vs = {"mode": "single", "voice": voice, "rate": rate, "pitch": pitch}
     return await generate_page_tts(num, text, vs)
 
@@ -385,7 +383,6 @@ async def generate_page_tts(num, text, vs):
     out_file = OUT_DIR / f"page-{num:02d}.mp3"
     import aiohttp
     proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("http_proxy") or os.environ.get("https_proxy") or None
-    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
 
     mode = vs.get("mode", "single")
     speaker_a = vs.get("speaker_a", {
@@ -411,15 +408,25 @@ async def generate_page_tts(num, text, vs):
             v = "+" + v
         return v
 
+    meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
+    if meta_file.exists():
+        try: meta_file.unlink()
+        except Exception: pass
+
     if mode == "dual" or (len(turns) > 1 and any(t["speaker"] == "B" for t in turns)):
         turn_files = []
+        turn_durations = []
+        all_exact_clauses = []
+        current_turn_offset = 0.0
+
         for idx, turn in enumerate(turns):
             spk = turn["speaker"]
             spk_cfg = speaker_a if spk == "A" else speaker_b
             voice = spk_cfg.get("voice", "zh-TW-YunJheNeural" if spk == "A" else "zh-TW-HsiaoChenNeural")
             rate = norm_param(spk_cfg.get("rate"), "-5%")
             pitch = norm_param(spk_cfg.get("pitch"), "-2Hz")
-            
+            spk_name = speaker_a.get("name", "主持人 A") if spk == "A" else speaker_b.get("name", "對談者 B")
+
             turn_file = OUT_DIR / f"page-{num:02d}-turn-{idx:02d}.mp3"
             for attempt in range(3):
                 try:
@@ -431,19 +438,69 @@ async def generate_page_tts(num, text, vs):
                         kwargs["proxy"] = proxy
                     connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
                     communicate = edge_tts.Communicate(turn["text"], voice, **kwargs, connector=connector)
-                    await communicate.save(str(turn_file))
+                    
+                    audio_bytes = bytearray()
+                    sentence_boundaries = []
+                    async for chunk in communicate.stream():
+                        if chunk["type"] == "audio":
+                            audio_bytes.extend(chunk["data"])
+                        elif chunk["type"] == "SentenceBoundary":
+                            sentence_boundaries.append({
+                                "text": chunk["text"],
+                                "start": chunk["offset"] / 10000000.0,
+                                "end": (chunk["offset"] + chunk["duration"]) / 10000000.0
+                            })
+
+                    with open(turn_file, "wb") as f_tf:
+                        f_tf.write(audio_bytes)
                     turn_files.append(turn_file)
+
+                    t_dur = get_audio_duration(turn_file)
+                    turn_durations.append(t_dur)
+
+                    if sentence_boundaries:
+                        for sb in sentence_boundaries:
+                            s_text = sb["text"]
+                            s_start = current_turn_offset + sb["start"]
+                            s_end = current_turn_offset + sb["end"]
+                            s_dur = s_end - s_start
+
+                            sub_clauses = re.findall(r'[^，。；：？！、\s]+[，。；：？！、\s]*', s_text)
+                            sub_clauses = [c.strip() for c in sub_clauses if c.strip()]
+                            if not sub_clauses:
+                                sub_clauses = [s_text]
+
+                            total_chars = sum(len(c) for c in sub_clauses) or 1
+                            curr_t = s_start
+                            for idx_c, c in enumerate(sub_clauses):
+                                if idx_c == len(sub_clauses) - 1:
+                                    c_end = s_end
+                                else:
+                                    c_dur = s_dur * (len(c) / total_chars)
+                                    c_end = curr_t + c_dur
+
+                                all_exact_clauses.append({
+                                    "text": c,
+                                    "start": round(curr_t, 2),
+                                    "end": round(c_end, 2),
+                                    "speaker": spk,
+                                    "speaker_name": spk_name
+                                })
+                                curr_t = c_end
+                    current_turn_offset += t_dur
                     break
                 except Exception as e:
                     if attempt == 2:
                         raise e
                     await asyncio.sleep(1.5)
 
-        turn_durations = [get_audio_duration(tf) for tf in turn_files]
-        meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
         try:
             with open(meta_file, "w", encoding="utf-8") as f_m:
-                json.dump({"turn_durations": turn_durations}, f_m, indent=2)
+                json.dump({
+                    "mode": "dual",
+                    "turn_durations": turn_durations,
+                    "exact_clauses": all_exact_clauses
+                }, f_m, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -472,6 +529,8 @@ async def generate_page_tts(num, text, vs):
         voice = vs.get("voice", "zh-TW-YunJheNeural")
         rate = norm_param(vs.get("rate"), "-5%")
         pitch = norm_param(vs.get("pitch"), "-2Hz")
+        spk_a_name = speaker_a.get("name", "主持人 A")
+
         for attempt in range(3):
             try:
                 kwargs = {}
@@ -482,7 +541,62 @@ async def generate_page_tts(num, text, vs):
                     kwargs["proxy"] = proxy
                 connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
                 communicate = edge_tts.Communicate(text, voice, **kwargs, connector=connector)
-                await communicate.save(str(out_file))
+                
+                audio_bytes = bytearray()
+                sentence_boundaries = []
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_bytes.extend(chunk["data"])
+                    elif chunk["type"] == "SentenceBoundary":
+                        sentence_boundaries.append({
+                            "text": chunk["text"],
+                            "start": chunk["offset"] / 10000000.0,
+                            "end": (chunk["offset"] + chunk["duration"]) / 10000000.0
+                        })
+
+                with open(out_file, "wb") as f_out:
+                    f_out.write(audio_bytes)
+
+                exact_clauses = []
+                if sentence_boundaries:
+                    for sb in sentence_boundaries:
+                        s_text = sb["text"]
+                        s_start = sb["start"]
+                        s_end = sb["end"]
+                        s_dur = s_end - s_start
+
+                        sub_clauses = re.findall(r'[^，。；：？！、\s]+[，。；：？！、\s]*', s_text)
+                        sub_clauses = [c.strip() for c in sub_clauses if c.strip()]
+                        if not sub_clauses:
+                            sub_clauses = [s_text]
+
+                        total_chars = sum(len(c) for c in sub_clauses) or 1
+                        curr_t = s_start
+                        for idx_c, c in enumerate(sub_clauses):
+                            if idx_c == len(sub_clauses) - 1:
+                                c_end = s_end
+                            else:
+                                c_dur = s_dur * (len(c) / total_chars)
+                                c_end = curr_t + c_dur
+
+                            exact_clauses.append({
+                                "text": c,
+                                "start": round(curr_t, 2),
+                                "end": round(c_end, 2),
+                                "speaker": "A",
+                                "speaker_name": spk_a_name
+                            })
+                            curr_t = c_end
+
+                try:
+                    with open(meta_file, "w", encoding="utf-8") as f_m:
+                        json.dump({
+                            "mode": "single",
+                            "exact_clauses": exact_clauses
+                        }, f_m, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+
                 return out_file
             except Exception as e:
                 if attempt == 2:

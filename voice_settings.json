@@ -1,19 +1,19 @@
 {
-  "mode": "dual",
-  "voice": "zh-TW-YunJheNeural",
-  "rate": "-5%",
-  "pitch": "-2Hz",
+  "mode": "single",
+  "voice": "zh-CN-YunxiNeural",
+  "rate": "0%",
+  "pitch": "0Hz",
   "pad_time": 0.5,
   "speaker_a": {
     "name": "主持人 A",
-    "color": "#06b6d4",
+    "color": "#40a9ff",
     "voice": "zh-TW-YunJheNeural",
     "rate": "0%",
-    "pitch": "0Hz"
+    "pitch": "-5Hz"
   },
   "speaker_b": {
     "name": "專家 B",
-    "color": "#8b5cf6",
+    "color": "#fadb14",
     "voice": "zh-TW-HsiaoChenNeural",
     "rate": "+5%",
     "pitch": "-2Hz"
