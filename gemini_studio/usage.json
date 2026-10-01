@@ -1,0 +1,150 @@
+{
+  "date": "2026-10-01",
+  "limit": 100,
+  "used": 20,
+  "remaining": 80,
+  "total_seconds": 646.68,
+  "total_chars": 3329,
+  "history": [
+    {
+      "timestamp": "20:12:59",
+      "count": 1,
+      "chars": 186,
+      "seconds": 34.04,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:13:14",
+      "count": 1,
+      "chars": 191,
+      "seconds": 38.84,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:13:26",
+      "count": 1,
+      "chars": 179,
+      "seconds": 35.84,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:13:40",
+      "count": 1,
+      "chars": 200,
+      "seconds": 38.52,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:13:52",
+      "count": 1,
+      "chars": 169,
+      "seconds": 34.16,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:14:06",
+      "count": 1,
+      "chars": 190,
+      "seconds": 36.68,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:14:19",
+      "count": 1,
+      "chars": 190,
+      "seconds": 36.52,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:14:33",
+      "count": 1,
+      "chars": 203,
+      "seconds": 40.48,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:14:47",
+      "count": 1,
+      "chars": 200,
+      "seconds": 37.44,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:14:58",
+      "count": 1,
+      "chars": 181,
+      "seconds": 34.04,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:15:09",
+      "count": 1,
+      "chars": 145,
+      "seconds": 25.84,
+      "note": "gemini-3.8-flash-tts (Charon)"
+    },
+    {
+      "timestamp": "20:19:26",
+      "count": 1,
+      "chars": 7,
+      "seconds": 1.96,
+      "note": "gemini-3.8-flash-tts (Puck)"
+    },
+    {
+      "timestamp": "20:19:27",
+      "count": 1,
+      "chars": 7,
+      "seconds": 2.24,
+      "note": "gemini-3.8-flash-lite-tts (Puck)"
+    },
+    {
+      "timestamp": "20:25:25",
+      "count": 1,
+      "chars": 193,
+      "seconds": 37.64,
+      "note": "gemini-3.8-flash-lite-tts (Charon)"
+    },
+    {
+      "timestamp": "20:25:55",
+      "count": 1,
+      "chars": 193,
+      "seconds": 37.08,
+      "note": "gemini-3.8-flash-lite-tts (Charon)"
+    },
+    {
+      "timestamp": "20:26:06",
+      "count": 1,
+      "chars": 177,
+      "seconds": 37.24,
+      "note": "gemini-3.8-flash-lite-tts (Charon)"
+    },
+    {
+      "timestamp": "20:26:16",
+      "count": 1,
+      "chars": 167,
+      "seconds": 33.72,
+      "note": "gemini-3.8-flash-lite-tts (Charon)"
+    },
+    {
+      "timestamp": "20:38:02",
+      "count": 1,
+      "chars": 186,
+      "seconds": 33.6,
+      "note": "gemini-3.8-flash-lite-tts (Charon)"
+    },
+    {
+      "timestamp": "21:03:07",
+      "count": 1,
+      "chars": 186,
+      "seconds": 34.6,
+      "note": "gemini-3.8-flash-lite-tts (Achernar)"
+    },
+    {
+      "timestamp": "21:04:06",
+      "count": 1,
+      "chars": 179,
+      "seconds": 36.2,
+      "note": "gemini-3.8-flash-lite-tts (Leda)"
+    }
+  ]
+}

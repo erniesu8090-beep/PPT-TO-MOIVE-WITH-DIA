@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini 3.8 影音工作坊 (獨立高音質版)</title>
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: #1e293b;
+      --card-border: #334155;
+      --primary: #38bdf8;
+      --primary-hover: #0ea5e9;
+      --accent: #f59e0b;
+      --success: #10b981;
+      --danger: #ef4444;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang TC", "Microsoft JhengHei", sans-serif; }
+    body { background-color: var(--bg-color); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; }
+    
+    /* Header & Quota Dashboard */
+    header { background: rgba(30, 41, 59, 0.85); backdrop-filter: blur(12px); border-bottom: 1px solid var(--card-border); padding: 12px 24px; position: sticky; top: 0; z-index: 100; display: flex; justify-content: space-between; align-items: center; }
+    .brand { display: flex; align-items: center; gap: 10px; font-size: 1.15rem; font-weight: 700; color: #fff; }
+    .brand span { color: var(--primary); }
+    .quota-badge { background: #0f172a; border: 1px solid var(--card-border); border-radius: 20px; padding: 6px 14px; font-size: 0.85rem; display: flex; align-items: center; gap: 10px; }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px var(--success); }
+    .progress-bar-wrap { width: 90px; height: 6px; background: #334155; border-radius: 3px; overflow: hidden; display: inline-block; vertical-align: middle; }
+    .progress-bar-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.3s ease; }
+
+    /* Layout */
+    .container { max-width: 1440px; margin: 0 auto; padding: 24px; display: grid; grid-template-columns: 460px 1fr; gap: 24px; flex: 1; width: 100%; }
+    @media (max-width: 1024px) { .container { grid-template-columns: 1fr; } }
+
+    /* Cards */
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+    .card-title { font-size: 1rem; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; color: var(--text-main); }
+    .card-title i { font-style: normal; }
+
+    /* Forms & Inputs */
+    label { font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 6px; }
+    input[type="text"], select, textarea { width: 100%; background: #0f172a; border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-main); padding: 9px 12px; font-size: 0.9rem; outline: none; transition: border-color 0.2s; }
+    input[type="text"]:focus, select:focus, textarea:focus { border-color: var(--primary); }
+    textarea { resize: vertical; min-height: 80px; }
+
+    /* Buttons */
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 16px; font-size: 0.9rem; font-weight: 600; border-radius: 8px; cursor: pointer; border: none; transition: all 0.2s; }
+    .btn-primary { background: var(--primary); color: #0f172a; }
+    .btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); }
+    .btn-secondary { background: #334155; color: #fff; }
+    .btn-secondary:hover { background: #475569; }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-success:hover { filter: brightness(1.1); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-full { width: 100%; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    /* Upload Box */
+    .upload-zone { border: 2px dashed var(--card-border); border-radius: 10px; padding: 24px; text-align: center; cursor: pointer; transition: all 0.2s; background: rgba(15, 23, 42, 0.5); }
+    .upload-zone:hover { border-color: var(--primary); background: rgba(56, 189, 248, 0.05); }
+
+    /* Slides List in Right Column */
+    .tabs { display: flex; gap: 10px; border-bottom: 1px solid var(--card-border); padding-bottom: 12px; margin-bottom: 20px; }
+    .tab-btn { background: transparent; border: none; color: var(--text-muted); padding: 8px 16px; font-size: 0.95rem; font-weight: 600; border-radius: 6px; cursor: pointer; }
+    .tab-btn.active { color: var(--primary); background: rgba(56, 189, 248, 0.1); }
+    
+    .slide-card { background: #0f172a; border: 1px solid var(--card-border); border-radius: 10px; padding: 14px; margin-bottom: 14px; display: grid; grid-template-columns: 140px 1fr; gap: 16px; align-items: start; }
+    .slide-thumb { width: 100%; aspect-ratio: 16/9; background: #1e293b; border-radius: 6px; object-fit: cover; border: 1px solid var(--card-border); }
+    .slide-info { display: flex; flex-direction: column; gap: 8px; }
+    .slide-header { display: flex; justify-content: space-between; align-items: center; }
+    .slide-num { font-weight: 700; font-size: 0.95rem; color: var(--primary); }
+    .badge { font-size: 0.75rem; padding: 3px 8px; border-radius: 12px; font-weight: 600; }
+    .badge-ready { background: rgba(16, 185, 129, 0.2); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-pending { background: rgba(148, 163, 184, 0.2); color: var(--text-muted); }
+    .audio-player-mini { width: 100%; height: 32px; margin-top: 4px; }
+
+    /* Video & Preview Box */
+    .preview-box { background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 16/9; width: 100%; display: flex; align-items: center; justify-content: center; border: 1px solid var(--card-border); margin-bottom: 16px; }
+    video { width: 100%; height: 100%; object-fit: contain; }
+    .srt-box { background: #0f172a; border: 1px solid var(--card-border); border-radius: 8px; padding: 14px; font-family: monospace; font-size: 0.85rem; max-height: 280px; overflow-y: auto; white-space: pre-wrap; color: #cbd5e1; margin-bottom: 16px; }
+
+    /* Checkbox & Switch */
+    .check-label { display: flex; align-items: center; gap: 10px; font-size: 0.9rem; cursor: pointer; color: var(--text-main); margin: 12px 0; }
+    .check-label input { width: 17px; height: 17px; accent-color: var(--primary); }
+
+    /* Console Log & Operation Progress */
+    .console-log {
+      background: #05040a;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      height: 200px;
+      padding: 12px;
+      font-family: 'Consolas', 'Courier New', Courier, monospace;
+      font-size: 11px;
+      color: #10b981;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .progress-bar-container {
+      width: 100%;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+      overflow: hidden;
+      display: none;
+      margin-bottom: 12px;
+    }
+    .progress-bar {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--success));
+      transition: width 0.3s ease;
+    }
+
+    /* Toast */
+    #toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: 8px; background: #1e293b; color: #fff; font-size: 0.9rem; border: 1px solid var(--primary); display: none; box-shadow: 0 4px 16px rgba(0,0,0,0.4); z-index: 1000; }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation & Quota Display -->
+  <header>
+    <div class="brand">
+      <span>✨ Gemini 3.8</span> 影音工作坊 <small style="font-size:0.75rem; color:var(--text-muted); font-weight:normal;">(獨立高音質版)</small>
+    </div>
+    <div style="display:flex; align-items:center; gap:16px;">
+      <div class="quota-badge">
+        <span class="status-dot"></span>
+        <span>今日免費額度剩餘: <strong id="quota-remain" style="color:var(--primary);">--</strong> / <span id="quota-limit">100</span> 次</span>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar-fill" id="quota-fill"></div>
+        </div>
+      </div>
+      <button class="btn btn-secondary" onclick="promptApiKey()" style="padding:6px 12px; font-size:0.8rem;">🔑 設定金鑰</button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <div class="container">
+    
+    <!-- Left Column: Controls & Upload -->
+    <div class="left-col">
+      
+      <!-- 1. PDF Upload Card -->
+      <div class="card">
+        <div class="card-title"><i>📄</i> 1. 上傳簡報 PDF</div>
+        <div class="upload-zone" onclick="document.getElementById('pdf-input').click()">
+          <p id="upload-label" style="font-weight:600; color:var(--text-main);">點擊或拖曳 PDF 檔案至此</p>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:6px;">系統將自動分割為高畫質 1080P 投影片畫面</p>
+          <input type="file" id="pdf-input" accept="application/pdf" style="display:none;" onchange="handlePdfUpload(event)">
+        </div>
+      </div>
+
+      <!-- 2. Voice & Model Settings Card -->
+      <div class="card">
+        <div class="card-title"><i>🎙️</i> 2. Gemini 3.8 語音聲線設定</div>
+        
+        <div style="margin-bottom:12px;">
+          <label>語音模型 (Model)</label>
+          <select id="voice-model" onchange="saveProjectSettings()">
+            <option value="gemini-3.8-flash-tts" selected>Gemini 3.8 Flash TTS（推薦・富情感演技）</option>
+            <option value="gemini-3.8-flash-lite-tts">Gemini 3.8 Flash-Lite TTS（高速輕量）</option>
+          </select>
+        </div>
+
+        <div style="margin-bottom:14px;">
+          <label>角色音色 (Prebuilt Voice)</label>
+          <select id="voice-name" onchange="saveProjectSettings()">
+            <optgroup label="👦 推薦男聲">
+              <option value="Puck" selected>Puck（活力青年・清晰自然）</option>
+              <option value="Orus">Orus（沉穩成熟・專業主持）</option>
+              <option value="Charon">Charon（磁性低音・沉穩說書）</option>
+              <option value="Enceladus">Enceladus（冷靜分析・科技專業）</option>
+              <option value="Fenrir">Fenrir（厚重有力）</option>
+            </optgroup>
+            <optgroup label="👧 推薦女聲">
+              <option value="Achernar">Achernar（輕柔氣音・志玲聲線・首選）</option>
+              <option value="Kore">Kore（溫和親切・說服力強）</option>
+              <option value="Zephyr">Zephyr（輕快活潑・明亮朝氣）</option>
+              <option value="Aoede">Aoede（優雅知性・旁白敘事）</option>
+              <option value="Autonoe">Autonoe（明快清亮）</option>
+              <option value="Leda">Leda（柔和沈靜・少女娃娃音）</option>
+            </optgroup>
+          </select>
+        </div>
+
+        <!-- Voice Style Prompt Section -->
+        <div style="margin-bottom:14px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:10px 12px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+            <label style="margin:0; font-weight:600; font-size:0.85rem;">🎭 語音風格 / 人設提示詞 (System Prompt)</label>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <select id="style-preset-select" style="font-size:0.75rem; padding:3px 8px; border-radius:4px; background:#1e1e2d; color:#eee; border:1px solid #444; cursor:pointer;" onchange="applyPresetOption(this.value)">
+                <option value="" disabled selected>✨ 選擇人設範本風格...</option>
+                <option value="chiling">🌸 志玲姐姐（溫柔療癒・娃娃音）</option>
+                <option value="storyteller">🎙️ 知性說書（專業科普・溫暖親和）</option>
+                <option value="documentary">🎬 沉穩紀錄片（磁性低音・磅礴厚重）</option>
+                <option value="tech_expert">💻 科技顧問（冷靜精準・條理分明）</option>
+                <option value="energetic">🔥 活力陽光（熱情明亮・朝氣互動）</option>
+                <option value="meditation">🌱 舒緩放鬆（極輕氣音・放鬆慢活）</option>
+              </select>
+              <button class="btn btn-secondary" type="button" style="padding:2px 6px; font-size:0.75rem; cursor:pointer;" onclick="clearVoicePreset()" title="清除自訂提示詞">
+                ✕ 清除
+              </button>
+            </div>
+          </div>
+          <textarea id="voice-style-prompt" rows="2" style="width:100%; font-size:0.8rem; line-height:1.4; padding:6px 8px; border-radius:6px; resize:vertical; box-sizing:border-box;" placeholder="可選填：輸入語音風格指令（例如：請用極溫柔的標準台灣腔，輕聲細語、帶著微笑與輕柔氣音...）。此指令僅作用於聲音表現，絕不會干擾字幕！" onchange="saveProjectSettings()"></textarea>
+          <small style="color:var(--text-muted); font-size:0.72rem; display:block; margin-top:4px;">💡 透過 System Instruction 引導語氣與口音，字幕依然保持純淨台詞不被污染。</small>
+        </div>
+
+        <div style="margin-bottom:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <label style="margin:0;">每頁轉場間隔時間 (Padding Time)</label>
+            <span id="pad-time-val" style="font-size:0.85rem; font-weight:700; color:var(--primary);">0.5 秒</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px;">
+            <input type="range" id="pad-time-range" min="0" max="3" step="0.1" value="0.5" style="flex:1; accent-color:var(--primary);" oninput="updatePadTime(this.value)">
+            <input type="number" id="pad-time-input" min="0" max="10" step="0.1" value="0.5" style="width:65px; text-align:center; padding:5px 6px;" onchange="updatePadTime(this.value)">
+          </div>
+          <small style="color:var(--text-muted); font-size:0.75rem;">控制每頁旁白說完後，停留多久再切換至下一頁（預設 0.5 秒）</small>
+        </div>
+
+        <div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <label style="margin:0;">批次旁白稿匯入（自動辨識【第 X 頁：標題】）</label>
+            <button class="btn btn-secondary" style="padding:2px 8px; font-size:0.75rem;" onclick="document.getElementById('txt-input').click()">
+              📂 載入 TXT 檔
+            </button>
+            <input type="file" id="txt-input" accept=".txt" style="display:none;" onchange="handleTxtUpload(event)">
+          </div>
+          <textarea id="batch-script" placeholder="可直接貼上完整口白 TXT 內容，例如：&#10;【第 1 頁：煉製結構透視】&#10;大家好，歡迎來到大林煉油廠...&#10;【第 2 頁：煉製系統全貌】&#10;當原油卸下油輪，它們的旅程就開始了..."></textarea>
+          <button class="btn btn-secondary btn-full" style="margin-top:8px;" onclick="applyBatchScript()">⚡ 智慧拆分標題與口白</button>
+        </div>
+      </div>
+
+      <!-- 3. Page Badge Settings Card -->
+      <div class="card">
+        <div class="card-title"><i>📌</i> 3. 頁面外觀與標籤設定</div>
+        
+        <label class="check-label" style="margin-top:0; margin-bottom:12px;">
+          <input type="checkbox" id="show-page-badge" checked onchange="saveProjectSettings()">
+          <span style="font-weight:600;">顯示左上角頁數與標題</span>
+        </label>
+
+        <div style="margin-bottom:12px;">
+          <label>頁碼背景顏色</label>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <input type="color" id="badge-bg-color" value="#0e607c" style="width:48px; height:36px; border:none; border-radius:6px; cursor:pointer; background:transparent; padding:0;" onchange="updateBadgeColor(this.value)">
+            <span id="badge-bg-color-text" style="font-family:monospace; font-size:0.9rem; color:var(--text-main);">#0e607c</span>
+          </div>
+        </div>
+
+        <div style="margin-bottom:4px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <label style="margin:0;">文字大小</label>
+            <span id="badge-font-size-val" style="font-size:0.85rem; font-weight:700; color:var(--primary);">20px</span>
+          </div>
+          <input type="range" id="badge-font-size" min="14" max="40" step="1" value="20" style="width:100%; accent-color:var(--primary);" oninput="updateBadgeFontSize(this.value)">
+        </div>
+      </div>
+
+      <!-- 4. Actions Card -->
+      <div class="card">
+        <div class="card-title"><i>⚡</i> 4. 核心動作</div>
+        
+        <button class="btn btn-primary btn-full" id="btn-gen-audio" onclick="generateAllAudio()" style="margin-bottom:10px;">
+          🎙️ 生成全部語音 (自動計算時間軸)
+        </button>
+
+        <label class="check-label">
+          <input type="checkbox" id="check-burn-sub" onchange="saveProjectSettings()">
+          <span>燒錄硬字幕到影片（預設不勾選：極速輸出純淨影片 + 獨立 SRT）</span>
+        </label>
+
+        <button class="btn btn-success btn-full" id="btn-build-video" onclick="buildFullVideo()" style="margin-bottom:14px;">
+          🎬 合成完整影片 (MP4)
+        </button>
+
+        <!-- Operation Progress Bar -->
+        <div class="progress-bar-container" id="progressBarContainer">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <label style="margin:0; font-weight:600; color:var(--text-main);">後台日誌控制台</label>
+          <button class="btn btn-secondary" style="padding:2px 8px; font-size:0.75rem;" onclick="clearConsoleLog()">清空日誌</button>
+        </div>
+        <div class="console-log" id="logConsole">尚未開始渲染。</div>
+      </div>
+
+    </div>
+
+    <!-- Right Column: Tabs (Slides Editor & Video Preview) -->
+    <div class="right-col">
+      <div class="tabs">
+        <button class="tab-btn active" id="tab-slides-btn" onclick="switchTab('slides')">📄 逐頁台詞與試聽 (<span id="slide-count">0</span> 頁)</button>
+        <button class="tab-btn" id="tab-preview-btn" onclick="switchTab('preview')">🎥 成果預覽與下載</button>
+      </div>
+
+      <!-- Tab 1: Slides Content -->
+      <div id="tab-slides">
+        <div id="slides-list">
+          <p style="color:var(--text-muted); text-align:center; padding:40px;">尚未上傳 PDF 簡報，請先從左側上傳。</p>
+        </div>
+      </div>
+
+      <!-- Tab 2: Video & SRT Preview Content -->
+      <div id="tab-preview" style="display:none;">
+        <div class="card">
+          <div class="card-title"><i>🎬</i> 影片預覽</div>
+          <div class="preview-box">
+            <video id="video-player" controls style="display:none;"></video>
+            <div id="video-empty" style="color:var(--text-muted);">尚未合成影片，請點擊左側「合成完整影片」</div>
+          </div>
+          <div style="display:flex; gap:12px;">
+            <a id="btn-download-video" class="btn btn-primary" style="flex:1; display:none;" href="/api/download_video" download="gemini_video.mp4">
+              ⬇️ 下載 MP4 完整影片
+            </a>
+            <a id="btn-download-srt" class="btn btn-secondary" style="flex:1; display:none;" href="/api/download_srt" download="subtitles.srt">
+              📥 下載 SRT 外掛字幕檔
+            </a>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><i>📝</i> 外掛字幕 (SRT) 預覽</div>
+          <div class="srt-box" id="srt-preview-text">尚未生成字幕...</div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    let projectData = { slides: [], voice: 'Puck', model: 'gemini-3.8-flash-tts', burn_subtitles: false };
+
+    async function loadStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        
+        // Update Quota
+        document.getElementById('quota-remain').innerText = data.usage.remaining;
+        document.getElementById('quota-limit').innerText = data.usage.limit;
+        document.getElementById('quota-fill').style.width = data.usage.usage_pct + '%';
+        
+        projectData = data.project;
+        document.getElementById('voice-name').value = projectData.voice || 'Puck';
+        document.getElementById('voice-model').value = projectData.model || 'gemini-3.8-flash-tts';
+        document.getElementById('voice-style-prompt').value = projectData.voice_style_prompt || '';
+        document.getElementById('check-burn-sub').checked = !!projectData.burn_subtitles;
+        document.getElementById('slide-count').innerText = data.num_slides;
+
+        document.getElementById('show-page-badge').checked = (projectData.show_badge !== false);
+        const badgeColor = projectData.badge_bg_color || '#0e607c';
+        document.getElementById('badge-bg-color').value = badgeColor;
+        document.getElementById('badge-bg-color-text').innerText = badgeColor;
+        const badgeSize = projectData.badge_font_size || 20;
+        document.getElementById('badge-font-size').value = badgeSize;
+        document.getElementById('badge-font-size-val').innerText = badgeSize + 'px';
+
+        const pad = (projectData.pad_time !== undefined) ? Number(projectData.pad_time) : 0.5;
+        document.getElementById('pad-time-range').value = pad;
+        document.getElementById('pad-time-input').value = pad;
+        document.getElementById('pad-time-val').innerText = pad.toFixed(1) + ' 秒';
+
+        renderSlidesList(projectData.slides);
+
+
+        // Update video & srt buttons
+        if (data.video_ready) {
+          document.getElementById('video-empty').style.display = 'none';
+          const vp = document.getElementById('video-player');
+          vp.style.display = 'block';
+          vp.src = '/api/download_video?t=' + Date.now();
+          document.getElementById('btn-download-video').style.display = 'inline-flex';
+        }
+        if (data.srt_ready) {
+          document.getElementById('btn-download-srt').style.display = 'inline-flex';
+          fetchSrtPreview();
+        }
+
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderSlidesList(slides) {
+      const container = document.getElementById('slides-list');
+      if (!slides || slides.length === 0) {
+        container.innerHTML = '<p style="color:var(--text-muted); text-align:center; padding:40px;">尚未上傳 PDF 簡報，請先從左側上傳。</p>';
+        return;
+      }
+
+      container.innerHTML = slides.map((s, idx) => {
+        const pNum = s.page;
+        const pNumStr = String(pNum).padStart(2, '0');
+        const imgSrc = `/api/images/page-${pNumStr}.png?t=${Date.now()}`;
+        const audioSrc = `/api/audio/page-${pNumStr}.mp3?t=${Date.now()}`;
+        const isReady = s.audio_ready;
+        const dur = s.duration ? `(${s.duration} 秒)` : '';
+        const title = s.title || `第 ${pNum} 頁`;
+
+        return `
+          <div class="slide-card">
+            <img src="${imgSrc}" class="slide-thumb" alt="Slide ${pNum}" onerror="this.src=''"/>
+            <div class="slide-info">
+              <div class="slide-header" style="flex-wrap:wrap; gap:8px;">
+                <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:240px;">
+                  <span class="slide-num">第 ${pNum} 頁 ${dur}</span>
+                  <input type="text" value="${title}" placeholder="頁面標題" style="flex:1; padding:4px 8px; font-size:0.85rem; font-weight:600; background:#1e293b; border:1px solid #334155; border-radius:6px; color:#38bdf8;" onchange="updateSlideTitle(${pNum}, this.value)" title="投影片標題（純作為章節識別，預設不計入口白）">
+                </div>
+                <span class="badge ${isReady ? 'badge-ready' : 'badge-pending'}">
+                  ${isReady ? '✅ 語音已就緒' : '⏳ 未生成'}
+                </span>
+              </div>
+              <textarea placeholder="請輸入第 ${pNum} 頁的口白內容（語音發音內容）..." onchange="updateSlideText(${pNum}, this.value)">${s.text || ''}</textarea>
+              <div style="display:flex; gap:10px; align-items:center;">
+                <button class="btn btn-secondary" style="padding:4px 10px; font-size:0.8rem;" onclick="generateSingleAudio(${pNum})">
+                  🎙️ 單獨生成此頁
+                </button>
+                ${isReady ? `<audio class="audio-player-mini" controls src="${audioSrc}"></audio>` : ''}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function handleTxtUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        document.getElementById('batch-script').value = e.target.result;
+        showToast("已成功載入 TXT 檔案內容，正在進行智慧拆分...");
+        applyBatchScript();
+      };
+      reader.readAsText(file, "UTF-8");
+    }
+
+    function updateSlideTitle(pageNum, title) {
+      const slide = projectData.slides.find(s => s.page === pageNum);
+      if (slide) {
+        slide.title = title;
+        saveProjectSettings();
+      }
+    }
+
+    function switchTab(tab) {
+      if (tab === 'slides') {
+        document.getElementById('tab-slides').style.display = 'block';
+        document.getElementById('tab-preview').style.display = 'none';
+        document.getElementById('tab-slides-btn').classList.add('active');
+        document.getElementById('tab-preview-btn').classList.remove('active');
+      } else {
+        document.getElementById('tab-slides').style.display = 'none';
+        document.getElementById('tab-preview').style.display = 'block';
+        document.getElementById('tab-slides-btn').classList.remove('active');
+        document.getElementById('tab-preview-btn').classList.add('active');
+      }
+    }
+
+    function appendLog(msg) {
+      const consoleLog = document.getElementById('logConsole');
+      if (consoleLog.textContent.trim() === '尚未開始渲染。') {
+        consoleLog.textContent = '';
+      }
+      consoleLog.textContent += msg + '\n';
+      consoleLog.scrollTop = consoleLog.scrollHeight;
+    }
+
+    function clearConsoleLog() {
+      const consoleLog = document.getElementById('logConsole');
+      consoleLog.textContent = '尚未開始渲染。\n';
+      const container = document.getElementById('progressBarContainer');
+      if (container) container.style.display = 'none';
+      const bar = document.getElementById('progressBar');
+      if (bar) bar.style.width = '0%';
+    }
+
+    function updateProgress(pct) {
+      const container = document.getElementById('progressBarContainer');
+      const bar = document.getElementById('progressBar');
+      if (pct !== null && pct !== undefined) {
+        container.style.display = 'block';
+        bar.style.width = Math.min(100, Math.max(0, pct)) + '%';
+      }
+    }
+
+    async function handlePdfUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      showToast("正在解析 PDF 頁面中，請稍候...");
+      appendLog("📄 [上傳 PDF] 正在解析 PDF 頁面影像中，請稍候...");
+      updateProgress(20);
+
+      const reader = new FileReader();
+      reader.onload = async function() {
+        const base64 = reader.result;
+        try {
+          const res = await fetch('/api/upload_pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pdf_base64: base64 })
+          });
+          const data = await res.json();
+          if (data.success) {
+            showToast(`成功載入 ${data.num_slides} 頁簡報！`);
+            appendLog(`  ✓ 成功載入 ${data.num_slides} 頁簡報！已分割為 1080P 高畫質影像。`);
+            updateProgress(100);
+            loadStatus();
+          }
+        } catch (e) {
+          showToast("上傳解析失敗：" + e.message);
+          appendLog("  ❌ 上傳解析失敗：" + e.message);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function updateSlideText(pageNum, text) {
+      const slide = projectData.slides.find(s => s.page === pageNum);
+      if (slide) {
+        slide.text = text;
+        saveProjectSettings();
+      }
+    }
+
+    function updatePadTime(val) {
+      const num = Math.max(0.0, parseFloat(val) || 0.0);
+      document.getElementById('pad-time-range').value = num;
+      document.getElementById('pad-time-input').value = num;
+      document.getElementById('pad-time-val').innerText = num.toFixed(1) + ' 秒';
+      projectData.pad_time = num;
+      saveProjectSettings();
+      fetch('/api/generate_srt', { method: 'POST' }).then(() => {
+        fetchSrtPreview();
+        appendLog(`⏱️ [轉場設定] 每頁間隔時間已調整為 ${num.toFixed(1)} 秒，已重新計算 SRT 外掛字幕。`);
+      });
+    }
+
+    async function saveProjectSettings() {
+      projectData.voice = document.getElementById('voice-name').value;
+      projectData.model = document.getElementById('voice-model').value;
+      const promptEl = document.getElementById('voice-style-prompt');
+      projectData.voice_style_prompt = promptEl ? promptEl.value.trim() : '';
+      projectData.burn_subtitles = document.getElementById('check-burn-sub').checked;
+      projectData.pad_time = parseFloat(document.getElementById('pad-time-input').value) || 0.5;
+      projectData.show_badge = document.getElementById('show-page-badge').checked;
+      projectData.badge_bg_color = document.getElementById('badge-bg-color').value;
+      projectData.badge_font_size = parseInt(document.getElementById('badge-font-size').value) || 20;
+
+      await fetch('/api/save_project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(projectData)
+      });
+    }
+
+    const VOICE_PRESETS = {
+      chiling: {
+        voice: "Achernar",
+        name: "志玲姐姐（溫柔療癒・娃娃音）",
+        prompt: "請扮演一位極其溫柔的台灣女配音員，用類似林志玲的招牌娃娃音聲線朗讀。口音為標準台灣腔（無捲舌、無兒化音），語調極其溫柔、輕聲細語、帶著微笑與輕柔氣音，節奏舒緩放慢，帶著撒嬌與親切感。"
+      },
+      storyteller: {
+        voice: "Aoede",
+        name: "知性說書（專業科普・溫暖親和）",
+        prompt: "請扮演一位知性溫暖的專業科普主講人。使用自然清晰的台灣華語，語速適中、咬字分明，語氣帶著啟發性與循循善誘的親和力，就像在向聽眾娓娓道來一個精彩的故事。"
+      },
+      documentary: {
+        voice: "Charon",
+        name: "沉穩紀錄片（磁性低音・磅礴厚重）",
+        prompt: "請扮演一位深度紀錄片的專業旁白。聲音沉穩厚重、富有磁性與權威感，語速沉著緩慢，每句話的停頓充滿張力與沉思感，營造出歷史感與科技巨構的宏大氛圍。"
+      },
+      tech_expert: {
+        voice: "Enceladus",
+        name: "科技顧問（冷靜精準・條理分明）",
+        prompt: "請扮演一位高階科技顧問或半導體分析師。語氣冷靜自信、客觀專業，條理清晰分明，專有名詞發音精準，節奏明快有力，展現無可置疑的專業度與可信度。"
+      },
+      energetic: {
+        voice: "Puck",
+        name: "活力陽光（熱情明亮・朝氣互動）",
+        prompt: "請扮演一位活力滿滿、熱情洋溢的青年講師。使用親切生動的台灣腔，語氣明亮歡快、充滿好奇心與感染力，帶著躍躍欲試的興奮感，緊緊抓住聽眾的注意力。"
+      },
+      meditation: {
+        voice: "Achernar",
+        name: "舒緩放鬆（極輕氣音・放鬆慢活）",
+        prompt: "請扮演一位冥想與睡眠引導師。聲音極度輕柔舒緩，充滿溫柔的空氣感與微弱氣音，語速非常緩慢，字與字、句與句之間保持充足的呼吸與停頓，營造深層安心與放鬆的氛圍。"
+      }
+    };
+
+    function applyPresetOption(key) {
+      if (!key || !VOICE_PRESETS[key]) return;
+      const p = VOICE_PRESETS[key];
+      document.getElementById('voice-name').value = p.voice;
+      document.getElementById('voice-style-prompt').value = p.prompt;
+      saveProjectSettings();
+      appendLog(`✨ [語音設定] 已套用「${p.name}」：角色音色切換為 ${p.voice}，並已注入專屬風格提示詞！`);
+      showToast(`✨ 已套用：${p.name}`);
+      document.getElementById('style-preset-select').value = "";
+    }
+
+    function clearVoicePreset() {
+      document.getElementById('voice-style-prompt').value = '';
+      saveProjectSettings();
+      appendLog("🧹 [語音設定] 已清除語音風格提示詞（使用原聲預設表現）。");
+      showToast("已清除風格提示詞");
+      document.getElementById('style-preset-select').value = "";
+    }
+
+    function updateBadgeColor(val) {
+      document.getElementById('badge-bg-color-text').innerText = val;
+      saveProjectSettings();
+      appendLog(`🎨 [頁面外觀] 頁碼背景顏色已設定為: ${val}`);
+    }
+
+    function updateBadgeFontSize(val) {
+      document.getElementById('badge-font-size-val').innerText = val + 'px';
+      saveProjectSettings();
+    }
+
+    async function applyBatchScript() {
+      const text = document.getElementById('batch-script').value;
+      if (!text.trim()) {
+        showToast("請先輸入旁白劇本文案！");
+        return;
+      }
+      appendLog("📝 [劇本解析] 正在進行智慧辨識並拆分標題與口白...");
+      updateProgress(30);
+      try {
+        const res = await fetch('/api/parse_batch_script', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ script: text })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast("劇本已成功拆分並套用至各頁！");
+          appendLog(`  ✓ 劇本已成功拆分並套用至各頁！共處理 ${data.parsed_count || data.slides.length} 頁。`);
+          updateProgress(100);
+          loadStatus();
+        }
+      } catch (e) {
+        showToast("拆分失敗：" + e.message);
+        appendLog("  ❌ 拆分失敗：" + e.message);
+      }
+    }
+
+    async function generateAllAudio() {
+      const emptyTexts = projectData.slides.filter(s => !s.text.trim());
+      if (projectData.slides.length === 0) {
+        showToast("請先上傳 PDF 簡報！");
+        appendLog("⚠️ 請先上傳 PDF 簡報！");
+        return;
+      }
+      if (emptyTexts.length === projectData.slides.length) {
+        showToast("請先填寫投影片旁白台詞！");
+        appendLog("⚠️ 請先填寫投影片旁白台詞！");
+        return;
+      }
+
+      const btn = document.getElementById('btn-gen-audio');
+      btn.disabled = true;
+      btn.innerText = "⏳ 正在生成全部語音中...";
+      updateProgress(5);
+      appendLog("==========================================");
+      appendLog("🚀 啟動 Gemini 3.8 全投影片語音生成程序...");
+
+      const es = new EventSource('/api/generate_audio_stream');
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.log) {
+            appendLog(data.log);
+          }
+          if (data.progress !== undefined) {
+            updateProgress(data.progress);
+          }
+          if (data.complete) {
+            updateProgress(100);
+            btn.disabled = false;
+            btn.innerText = "🎙️ 生成全部語音 (自動計算時間軸)";
+            es.close();
+            showToast("🎉 全部語音生成完畢，SRT 外掛字幕已自動產生！");
+            loadStatus();
+          }
+        } catch (err) {
+          console.error("SSE parse error:", err);
+        }
+      };
+
+      es.onerror = (err) => {
+        console.error("SSE connection error:", err);
+        btn.disabled = false;
+        btn.innerText = "🎙️ 生成全部語音 (自動計算時間軸)";
+        es.close();
+        loadStatus();
+      };
+    }
+
+    async function generateSingleAudio(pageNum) {
+      showToast(`正在生成第 ${pageNum} 頁語音...`);
+      updateProgress(15);
+      appendLog("------------------------------------------");
+      appendLog(`🎙️ 啟動第 ${pageNum} 頁單獨語音生成...`);
+
+      const es = new EventSource('/api/generate_audio_stream?page=' + pageNum);
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.log) {
+            appendLog(data.log);
+          }
+          if (data.progress !== undefined) {
+            updateProgress(data.progress);
+          }
+          if (data.complete) {
+            updateProgress(100);
+            es.close();
+            showToast(`第 ${pageNum} 頁語音生成完成！`);
+            loadStatus();
+          }
+        } catch (err) {
+          console.error("SSE parse error:", err);
+        }
+      };
+
+      es.onerror = (err) => {
+        es.close();
+        loadStatus();
+      };
+    }
+
+    async function buildFullVideo() {
+      const btn = document.getElementById('btn-build-video');
+      btn.disabled = true;
+      btn.innerText = "⏳ 正在合成影片中...";
+      updateProgress(10);
+      appendLog("==========================================");
+      appendLog("🎬 啟動 MP4 完整影片合成壓制程序...");
+
+      const burn = document.getElementById('check-burn-sub').checked;
+      const pad = projectData.pad_time !== undefined ? projectData.pad_time : 0.5;
+      const showBadge = document.getElementById('show-page-badge').checked;
+      const badgeColor = encodeURIComponent(document.getElementById('badge-bg-color').value);
+      const badgeSize = document.getElementById('badge-font-size').value;
+
+      const es = new EventSource(`/api/build_video_stream?burn_subtitles=${burn}&pad_time=${pad}&show_badge=${showBadge}&badge_bg_color=${badgeColor}&badge_font_size=${badgeSize}`);
+
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.log) {
+            appendLog(data.log);
+          }
+          if (data.progress !== undefined) {
+            updateProgress(data.progress);
+          }
+          if (data.complete) {
+            updateProgress(100);
+            btn.disabled = false;
+            btn.innerText = "🎬 合成完整影片 (MP4)";
+            es.close();
+            showToast("🎬 影片合成成功！已可下載或預覽。");
+            switchTab('preview');
+            loadStatus();
+          }
+        } catch (err) {
+          console.error("SSE parse error:", err);
+        }
+      };
+
+      es.onerror = (err) => {
+        console.error("SSE error:", err);
+        btn.disabled = false;
+        btn.innerText = "🎬 合成完整影片 (MP4)";
+        es.close();
+        loadStatus();
+      };
+    }
+
+    async function fetchSrtPreview() {
+      try {
+        const res = await fetch('/api/download_srt');
+        if (res.ok) {
+          const txt = await res.text();
+          document.getElementById('srt-preview-text').innerText = txt;
+        }
+      } catch (e) {}
+    }
+
+    function promptApiKey() {
+      const key = prompt("請輸入您的 Google Gemini API Key：");
+      if (key && key.trim()) {
+        fetch('/api/save_api_key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: key.trim() })
+        }).then(res => res.json()).then(data => {
+          if (data.success) {
+            showToast("金鑰更新成功！");
+            appendLog("🔑 API Key 已更新成功！");
+            loadStatus();
+          } else {
+            showToast("儲存失敗：" + data.error);
+          }
+        });
+      }
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 4000);
+    }
+
+    // Initial Load
+    window.onload = loadStatus;
+  </script>
+</body>
+</html>
