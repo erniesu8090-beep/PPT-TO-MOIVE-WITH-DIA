@@ -1,6 +1,6 @@
 {
   "name": "slide-to-video-generator",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "description": "簡報影片 AI 製作工坊 (Slide to Video Generator with Web GUI)",
   "main": "app.py",
   "scripts": {

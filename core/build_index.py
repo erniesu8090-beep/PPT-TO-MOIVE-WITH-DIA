@@ -48,7 +48,7 @@ def build():
         "bg_color": "#0E7C7B",
         "font_size": 24,
         "show_version_badge": False,
-        "version_text": "SLIDE EDITION v2.4.0 (2026/07/25)"
+        "version_text": "SLIDE EDITION v3.0.0 (2026/10/05)"
     }
     chap_settings_path = Path("chapter_settings.json")
     if chap_settings_path.exists():
@@ -62,7 +62,7 @@ def build():
     chap_bg_color = chapter_settings.get("bg_color", "#0E7C7B")
     chap_font_size = chapter_settings.get("font_size", 24)
     show_version_badge = chapter_settings.get("show_version_badge", False)
-    version_text = chapter_settings.get("version_text", "SLIDE EDITION v2.4.0 (2026/07/25)")
+    version_text = chapter_settings.get("version_text", "SLIDE EDITION v3.0.0 (2026/10/05)")
     r, g, b = hex_to_rgb(chap_bg_color)
 
     if not show_page_number:

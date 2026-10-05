@@ -762,7 +762,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "bg_color": "#0E7C7B",
                 "font_size": 24,
                 "show_version_badge": True,
-                "version_text": "SLIDE EDITION v2.4.0 (2026/07/25)"
+                "version_text": "SLIDE EDITION v3.0.0 (2026/10/05)"
             }
             chap_path = WORKSPACE_DIR / "chapter_settings.json"
             if chap_path.exists():
@@ -1703,7 +1703,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <h1>🎬 簡報影片 AI 製作工坊</h1>
         <div class="version-badge">
             <span class="version-dot"></span>
-            <span class="version-text">SLIDE EDITION v2.4.0 (2026/07/25)</span>
+            <span class="version-text">SLIDE EDITION v3.0.0 (2026/10/05)</span>
         </div>
     </header>
 
@@ -2128,7 +2128,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         </div>
                         <div class="form-group" style="margin-bottom: 8px;">
                             <label for="versionText">版本標籤文字</label>
-                            <input type="text" id="versionText" value="SLIDE EDITION v2.4.0 (2026/07/25)">
+                            <input type="text" id="versionText" value="SLIDE EDITION v3.0.0 (2026/10/05)">
                         </div>
                     </div>
 
@@ -2258,7 +2258,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     document.getElementById('pageFontSizeVal').textContent = (chap.font_size || 24) + 'px';
                     
                     document.getElementById('showVersionBadge').checked = chap.show_version_badge !== false;
-                    document.getElementById('versionText').value = chap.version_text || 'SLIDE EDITION v2.4.0 (2026/07/25)';
+                    document.getElementById('versionText').value = chap.version_text || 'SLIDE EDITION v3.0.0 (2026/10/05)';
                 }
 
                 if (data.video_settings) {
