@@ -1,10 +1,12 @@
-# Byte-compiled / optimized / DLL files
+﻿# Byte-compiled / optimized / DLL files
 __pycache__/
+core/__pycache__/
 *.py[cod]
 *$py.class
 
 # Node.js
 node_modules/
+core/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -12,9 +14,13 @@ yarn-error.log*
 # Generated Assets & Outputs
 MovieOutput/
 renders/
+core/renders/
 assets/narration/
+core/assets/narration/
 assets/images/
+core/assets/images/
 assets/temp_slides.pdf
+core/assets/temp_slides.pdf
 
 # Environment & Temp files
 .env

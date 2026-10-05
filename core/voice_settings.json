@@ -2,7 +2,7 @@
   "mode": "single",
   "voice": "zh-CN-YunxiNeural",
   "rate": "0%",
-  "pitch": "0Hz",
+  "pitch": "+2Hz",
   "pad_time": 0.5,
   "speaker_a": {
     "name": "主持人 A",

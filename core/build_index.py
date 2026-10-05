@@ -249,13 +249,10 @@ def build():
   }}
   .slide.active {{ opacity: 1; }}
 
-  /* Ken Burns 緩慢放大效果 */
+  /* 投影片背景圖 (保持 100% 原始尺寸穩定顯示) */
   .slide .img {{
     position: absolute; inset: 0; background-size: cover; background-position: center;
-    transform: scale(1.0);
-    transition: transform var(--dur, 30s) linear;
   }}
-  .slide.active .img {{ transform: scale(1.06); }}
 
   .slide .vignette {{
     position: absolute; inset: 0;

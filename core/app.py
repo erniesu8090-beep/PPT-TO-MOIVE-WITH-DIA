@@ -14,9 +14,13 @@ import re
 import time
 import base64
 import fitz # PyMuPDF
+import shutil
 
 PORT = 8000
 WORKSPACE_DIR = pathlib.Path(__file__).parent.absolute()
+ROOT_DIR = WORKSPACE_DIR.parent
+MOVIE_OUTPUT_DIR = ROOT_DIR / "MovieOutput"
+MOVIE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR = WORKSPACE_DIR / "assets" / "narration"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -85,6 +89,17 @@ def render_uploaded_slides(pdf_bytes):
                 pass
     else:
         images_dir.mkdir(parents=True, exist_ok=True)
+        
+    # Delete old narration audio files
+    narration_dir = WORKSPACE_DIR / "assets" / "narration"
+    if narration_dir.exists():
+        for old_audio in narration_dir.glob("page-*.*"):
+            try:
+                old_audio.unlink()
+            except Exception:
+                pass
+    else:
+        narration_dir.mkdir(parents=True, exist_ok=True)
         
     for i, page in enumerate(doc):
         rect = page.rect
@@ -620,14 +635,21 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
 
-        # Compatibility redirect/read for older video file URLs now inside MovieOutput
-        if path.endswith(".mp4"):
-            file_name = urllib.parse.unquote(path.lstrip("/"))
-            # If requesting just the filename, check in MovieOutput
-            alt_path = WORKSPACE_DIR / "MovieOutput" / file_name
-            if alt_path.exists():
+        # Compatibility redirect/read for video/subtitle file URLs inside MovieOutput
+        if path.startswith("/MovieOutput/") or path.endswith(".mp4") or path.endswith(".srt"):
+            if path.startswith("/MovieOutput/"):
+                file_name = urllib.parse.unquote(path[len("/MovieOutput/"):])
+            else:
+                file_name = urllib.parse.unquote(path.lstrip("/"))
+            alt_path = MOVIE_OUTPUT_DIR / file_name
+            if alt_path.exists() and alt_path.is_file():
                 self.send_response(200)
-                self.send_header("Content-Type", "video/mp4")
+                if alt_path.suffix.lower() == ".mp4":
+                    self.send_header("Content-Type", "video/mp4")
+                elif alt_path.suffix.lower() == ".srt":
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                else:
+                    self.send_header("Content-Type", "application/octet-stream")
                 self.send_header("Content-Length", str(alt_path.stat().st_size))
                 self.end_headers()
                 with open(alt_path, "rb") as f:
@@ -917,11 +939,11 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                             
                     log_sse("\n🎉 恭喜！影片全部製作成功！")
                     if final_video_name:
-                        log_sse(f"  已輸出影片：{WORKSPACE_DIR / 'MovieOutput' / final_video_name}")
+                        log_sse(f"  已輸出影片：{MOVIE_OUTPUT_DIR / final_video_name}")
                     if clean_video_name:
-                        log_sse(f"  已輸出無字幕版：{WORKSPACE_DIR / 'MovieOutput' / clean_video_name}")
+                        log_sse(f"  已輸出無字幕版：{MOVIE_OUTPUT_DIR / clean_video_name}")
                     if srt_filename:
-                        log_sse(f"  已輸出字幕檔案：{WORKSPACE_DIR / 'MovieOutput' / srt_filename}")
+                        log_sse(f"  已輸出字幕檔案：{MOVIE_OUTPUT_DIR / srt_filename}")
                     
                     self.wfile.write(f"data: {json.dumps({'complete': True, 'video_name': final_video_name or '', 'clean_video_name': clean_video_name or '', 'srt_name': srt_filename or ''}, ensure_ascii=False)}\n\n".encode('utf-8'))
                     self.wfile.flush()

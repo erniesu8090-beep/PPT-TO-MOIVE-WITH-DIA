@@ -1,0 +1,1148 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>雙人對話式動態簡報影片播放器</title>
+<script>
+  if (new URLSearchParams(window.location.search).get('render') === 'true') {
+    document.documentElement.classList.add('render-mode');
+  }
+</script>
+<style>
+  @font-face {
+    font-family: 'GenSeki TW';
+    src: url('assets/fonts/GenSekiGothic2TW-M.otf') format('opentype');
+    font-weight: 500;
+    font-display: block;
+  }
+  @font-face {
+    font-family: 'GenSeki TW';
+    src: url('assets/fonts/GenSekiGothic2TW-B.otf') format('opentype');
+    font-weight: 700;
+    font-display: block;
+  }
+  @font-face {
+    font-family: 'GenSeki TW';
+    src: url('assets/fonts/GenSekiGothic2TW-H.otf') format('opentype');
+    font-weight: 900;
+    font-display: block;
+  }
+
+  :root {
+    --ink: #1A1A1A;
+    --paper: #FAF7EE;
+    --teal: #0E7C7B;
+    --gold: #C8941F;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; background: var(--ink); overflow: hidden;
+    font-family: 'GenSeki TW', sans-serif; color: #fff;
+  }
+
+  .stage {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  }
+
+  .slide {
+    position: absolute; inset: 0; opacity: 0;
+    transition: opacity 0.8s ease;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .slide.active { opacity: 1; }
+
+  /* 投影片背景圖 (保持 100% 原始尺寸穩定顯示) */
+  .slide .img {
+    position: absolute; inset: 0; background-size: cover; background-position: center;
+  }
+
+  .slide .vignette {
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 60%, rgba(0,0,0,0.3) 100%);
+    pointer-events: none;
+  }
+
+  .chapter {
+    position: absolute; top: 28px; left: 48px;
+    font-family: 'GenSeki TW', sans-serif; font-weight: 700;
+    font-size: 20px; letter-spacing: 0.15em; color: #fff;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.6);
+    z-index: 10;
+  }
+  .chapter .num {
+    color: #fff; background: #0e607c;
+    padding: 4px 14px; border-radius: 6px; font-weight: 900;
+    margin-right: 12px;
+    box-shadow: 0 2px 10px rgba(14,96,124,0.4);
+  }
+  .version-badge { display: none !important; }
+
+  /* 旁白字幕條 */
+  .subtitle {
+    position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%);
+    padding: 10px 20px;
+    background: transparent; text-shadow: -1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 2px 4px rgba(0,0,0,0.85); color: #ffffff;
+    font-family: 'Microsoft JhengHei', 'GenSeki TW', sans-serif; font-weight: 700;
+    font-size: 42px; line-height: 1.4; text-align: center;
+    opacity: 0; transition: opacity 0.2s ease;
+    z-index: 100;
+    display: inline-block;
+    width: auto;
+    max-width: 90%;
+    white-space: pre-wrap;
+  }
+  .subtitle.show { opacity: 1; }
+
+  /* 雙人對話名牌區 (已取消顯示左右人物燈號) */
+  .dialogue-stage {
+    display: none !important;
+  }
+
+  .speaker-card {
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(13, 11, 24, 0.75); backdrop-filter: blur(12px);
+    border: 2px solid rgba(255, 255, 255, 0.12); border-radius: 40px;
+    padding: 8px 20px 8px 10px;
+    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    opacity: 0.45; transform: scale(0.92);
+  }
+  .speaker-card.speaking {
+    opacity: 1; transform: scale(1.06);
+    background: rgba(22, 19, 43, 0.92);
+  }
+  .speaker-card.card-a.speaking {
+    border-color: #40a9ff;
+    box-shadow: 0 0 25px #40a9ffaa, inset 0 0 10px #40a9ff44;
+  }
+  .speaker-card.card-b.speaking {
+    border-color: #fadb14;
+    box-shadow: 0 0 25px #fadb14aa, inset 0 0 10px #fadb1444;
+  }
+
+  .speaker-card .avatar {
+    width: 42px; height: 42px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 900; font-size: 16px; color: #fff;
+    flex-shrink: 0; position: relative;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  }
+  .speaker-card.speaking .avatar::after {
+    content: ''; position: absolute; inset: -4px; border-radius: 50%;
+    border: 2px solid currentColor; animation: pulse-ring 1.5s infinite;
+  }
+  @keyframes pulse-ring {
+    0% { transform: scale(1); opacity: 0.8; }
+    100% { transform: scale(1.35); opacity: 0; }
+  }
+
+  .speaker-info { display: flex; flex-direction: column; }
+  .speaker-role { font-size: 10px; font-weight: 800; color: rgba(255,255,255,0.5); letter-spacing: 1px; }
+  .speaker-name { font-size: 15px; font-weight: 700; color: #fff; }
+
+  /* 開場畫面 */
+  .start-screen {
+    position: fixed; inset: 0; background: var(--ink); color: var(--paper);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 999; cursor: pointer; gap: 40px;
+  }
+  .start-screen .title {
+    font-family: 'GenSeki TW', sans-serif; font-weight: 900;
+    font-size: 100px; letter-spacing: 0.08em; line-height: 1.2;
+    text-align: center;
+    color: var(--paper);
+  }
+  .start-screen .sub {
+    font-size: 26px; color: rgba(250,247,238,0.65); font-weight: 500;
+    letter-spacing: 0.15em;
+  }
+  .start-screen .play {
+    width: 96px; height: 96px; border: 3px solid var(--gold);
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    color: var(--gold); transition: all 0.3s ease;
+  }
+  .start-screen:hover .play { background: var(--gold); color: var(--ink); transform: scale(1.05); }
+  .start-screen.hidden, html.render-mode .start-screen, body.render-mode .start-screen { display: none !important; }
+
+  /* 進度條 */
+  .progress {
+    position: absolute; left: 0; bottom: 0; height: 6px; background: var(--teal);
+    width: 0%; transition: width 0.2s linear;
+    z-index: 200;
+  }
+  body.render-no-embed .subtitle { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="start-screen" id="startScreen">
+  <div class="title">雙人對話簡報影音工坊</div>
+  <div class="play">
+    <svg width="28" height="32" viewBox="0 0 24 28"><path d="M2 2 L22 14 L2 26 Z" fill="currentColor"/></svg>
+  </div>
+  <div class="sub">雙人互動語音簡報 · 點擊開始</div>
+</div>
+
+<div class="stage" id="stage"></div>
+
+<!-- 雙人對話 Avatar 名牌區 -->
+<div class="dialogue-stage hidden" id="dialogueStage">
+  <div class="speaker-card card-a" id="speakerCardA">
+    <div class="avatar" style="background: linear-gradient(135deg, #40a9ff, #0284c7);">A</div>
+    <div class="speaker-info">
+      <div class="speaker-role">HOST</div>
+      <div class="speaker-name">主持人 A</div>
+    </div>
+  </div>
+  <div class="speaker-card card-b" id="speakerCardB">
+    <div class="avatar" style="background: linear-gradient(135deg, #fadb14, #c084fc);">B</div>
+    <div class="speaker-info">
+      <div class="speaker-role">GUEST</div>
+      <div class="speaker-name">專家 B</div>
+    </div>
+  </div>
+</div>
+
+<div class="progress" id="progress"></div>
+<audio id="audio" preload="auto"></audio>
+
+<script>
+const PAGES = [
+  {
+    i: 1,
+    dur: 35,
+    title: "變電所保護電驛介紹與原理",
+    audio_dur: 33.72,
+    clauses: [
+      { text: "大家好，", start: 0.1, end: 0.93, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我是具有二十年現場經驗的輸配電工程師。", start: 0.93, end: 4.88, speaker: "A", speaker_name: "主持人 A" },
+      { text: "很高興今天能跟各位分享變電所保護電驛的基礎原理與實務案例。", start: 4.83, end: 10.68, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電力系統就像是我們城市的血液血管，", start: 10.68, end: 14.22, speaker: "A", speaker_name: "主持人 A" },
+      { text: "而保護電驛就是默默守護電網運作的智慧警察。", start: 14.22, end: 18.6, speaker: "A", speaker_name: "主持人 A" },
+      { text: "今天我們會用最通俗易懂的方式，", start: 18.6, end: 21.21, speaker: "A", speaker_name: "主持人 A" },
+      { text: "從基礎架構、", start: 21.21, end: 22.26, speaker: "A", speaker_name: "主持人 A" },
+      { text: "ANSI", start: 22.26, end: 22.96, speaker: "A", speaker_name: "主持人 A" },
+      { text: "代號、", start: 22.96, end: 23.48, speaker: "A", speaker_name: "主持人 A" },
+      { text: "時間電流曲線，", start: 23.48, end: 24.7, speaker: "A", speaker_name: "主持人 A" },
+      { text: "一路談到第一變電所的真實火警事故。", start: 24.7, end: 27.66, speaker: "A", speaker_name: "主持人 A" },
+      { text: "準備好了嗎，", start: 27.66, end: 28.95, speaker: "A", speaker_name: "主持人 A" },
+      { text: "讓我們一起來解構這套攸關電力安全的靈魂機制。", start: 28.95, end: 33.65, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 2,
+    dur: 36,
+    title: "系統化解構電力防禦的五大核心脈絡",
+    audio_dur: 35.14,
+    clauses: [
+      { text: "為了讓大家能夠系統化地吸收，", start: 0.1, end: 2.74, speaker: "A", speaker_name: "主持人 A" },
+      { text: "今天的內容一共分為五大核心章節。", start: 2.74, end: 5.75, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們首先會建立保護電驛的基本觀念與六大設計準則，", start: 5.7, end: 10.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "接著整理常用", start: 10.05, end: 11.13, speaker: "A", speaker_name: "主持人 A" },
+      { text: "ANSI", start: 11.13, end: 11.86, speaker: "A", speaker_name: "主持人 A" },
+      { text: "設備代號。", start: 11.86, end: 12.76, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第三部分深入剖析過電流與接地保護的動作原理，", start: 12.76, end: 17.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第四部分探討主變壓器的差流保護與閉鎖機制。", start: 17.05, end: 21.15, speaker: "A", speaker_name: "主持人 A" },
+      { text: "最後，", start: 21.15, end: 21.79, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們會以第一變電所電容器火警事故進行實務研討，", start: 21.79, end: 26.67, speaker: "A", speaker_name: "主持人 A" },
+      { text: "帶大家從事故時間軸找出改善關鍵。", start: 26.67, end: 30.07, speaker: "A", speaker_name: "主持人 A" },
+      { text: "首先，", start: 30.07, end: 30.73, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們就從最基礎的電網安全鐵三角開始看起。", start: 30.73, end: 35.06, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 3,
+    dur: 40,
+    title: "電網安全鐵三角：量測、決策與切斷",
+    audio_dur: 39.48,
+    clauses: [
+      { text: "在變電所裡，", start: 0.1, end: 1.4, speaker: "A", speaker_name: "主持人 A" },
+      { text: "保護系統是由三個關鍵角色共同組成的鐵三角。", start: 1.4, end: 5.96, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第一個是比流器與比壓器，", start: 5.91, end: 8.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "就像是監視器與耳麥，", start: 8.16, end: 10.04, speaker: "A", speaker_name: "主持人 A" },
+      { text: "負責將幾萬伏特或數千安培的危險訊號，", start: 10.04, end: 13.41, speaker: "A", speaker_name: "主持人 A" },
+      { text: "按比例轉成安全的小訊號。", start: 13.41, end: 15.66, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第二個是保護電驛，", start: 15.66, end: 17.48, speaker: "A", speaker_name: "主持人 A" },
+      { text: "它是智慧大腦，", start: 17.48, end: 18.89, speaker: "A", speaker_name: "主持人 A" },
+      { text: "能在幾毫秒內計算異常並下達指令。", start: 18.89, end: 22.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第三個是斷路器，", start: 22.12, end: 23.81, speaker: "A", speaker_name: "主持人 A" },
+      { text: "就像防暴門衛，", start: 23.81, end: 25.29, speaker: "A", speaker_name: "主持人 A" },
+      { text: "收到指令就瞬間切斷高達數千安培的故障電弧。", start: 25.29, end: 29.71, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這三者相輔相成，", start: 29.71, end: 31.5, speaker: "A", speaker_name: "主持人 A" },
+      { text: "才能在故障發生的瞬間迅速反應。", start: 31.5, end: 34.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "接著我們來看看前端感測設備的實體外觀。", start: 34.84, end: 39.4, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 4,
+    dur: 38,
+    title: "比壓器 PT 與比流器 CT 實體與符號",
+    audio_dur: 37.01,
+    clauses: [
+      { text: "在變電所開關房裡，", start: 0.1, end: 2.07, speaker: "A", speaker_name: "主持人 A" },
+      { text: "比壓器", start: 2.07, end: 2.73, speaker: "A", speaker_name: "主持人 A" },
+      { text: "PT", start: 2.73, end: 3.17, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與比流器", start: 3.17, end: 4.04, speaker: "A", speaker_name: "主持人 A" },
+      { text: "CT", start: 4.04, end: 4.48, speaker: "A", speaker_name: "主持人 A" },
+      { text: "是最常看到的感測元件。", start: 4.48, end: 6.89, speaker: "A", speaker_name: "主持人 A" },
+      { text: "比壓器將高達", start: 6.84, end: 8.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "12kV", start: 8.0, end: 8.77, speaker: "A", speaker_name: "主持人 A" },
+      { text: "的高電壓按比例降為", start: 8.77, end: 10.52, speaker: "A", speaker_name: "主持人 A" },
+      { text: "110", start: 10.52, end: 11.1, speaker: "A", speaker_name: "主持人 A" },
+      { text: "伏特安全電壓供電驛量測；", start: 11.1, end: 13.42, speaker: "A", speaker_name: "主持人 A" },
+      { text: "而比流器則是以感應線圈圍繞主導體，", start: 13.42, end: 16.71, speaker: "A", speaker_name: "主持人 A" },
+      { text: "將數千安培的大電流降為", start: 16.71, end: 18.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "5", start: 18.84, end: 19.03, speaker: "A", speaker_name: "主持人 A" },
+      { text: "安培或", start: 19.03, end: 19.61, speaker: "A", speaker_name: "主持人 A" },
+      { text: "1", start: 19.61, end: 19.81, speaker: "A", speaker_name: "主持人 A" },
+      { text: "安培的小電流。", start: 19.81, end: 21.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "在工程單線圖上，", start: 21.16, end: 22.78, speaker: "A", speaker_name: "主持人 A" },
+      { text: "比流器採用像彈簧一樣的線圈符號表示。", start: 22.78, end: 26.41, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這兩個感測元件是保護電驛獲取現場資訊的唯一管道。", start: 26.41, end: 31.2, speaker: "A", speaker_name: "主持人 A" },
+      { text: "看完了感測設備，", start: 31.2, end: 33.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們來看整個保護系統的團隊組合。", start: 33.12, end: 36.95, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 5,
+    dur: 35,
+    title: "保護電驛團隊系統組合",
+    audio_dur: 34.22,
+    clauses: [
+      { text: "大家要有一個重要觀念，", start: 0.1, end: 2.25, speaker: "A", speaker_name: "主持人 A" },
+      { text: "保護電驛絕對不是單打獨鬥，", start: 2.25, end: 4.78, speaker: "A", speaker_name: "主持人 A" },
+      { text: "而是一個嚴密的團隊組合。", start: 4.78, end: 7.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這個團隊包含了提供訊號的比流器與比壓器、", start: 7.08, end: 10.89, speaker: "A", speaker_name: "主持人 A" },
+      { text: "進行邏輯判斷的保護電驛、", start: 10.89, end: 13.18, speaker: "A", speaker_name: "主持人 A" },
+      { text: "執行物理切離的斷路器、", start: 13.18, end: 15.28, speaker: "A", speaker_name: "主持人 A" },
+      { text: "傳輸訊號的通訊設備，", start: 15.28, end: 17.18, speaker: "A", speaker_name: "主持人 A" },
+      { text: "以及最關鍵的變電所直流蓄電池電源。", start: 17.18, end: 20.43, speaker: "A", speaker_name: "主持人 A" },
+      { text: "即使交流電網全廠停電，", start: 20.43, end: 22.67, speaker: "A", speaker_name: "主持人 A" },
+      { text: "直流蓄電池依然能提供穩定電力讓保護電驛與跳脫線圈正常運作。", start: 22.67, end: 28.6, speaker: "A", speaker_name: "主持人 A" },
+      { text: "了解了團隊成員後，", start: 28.6, end: 30.52, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們來看看訊號是怎麼在裡面傳遞的。", start: 30.52, end: 34.15, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 6,
+    dur: 41,
+    title: "變電所保護系統運作與信號傳遞",
+    audio_dur: 39.67,
+    clauses: [
+      { text: "當線路發生故障時，", start: 0.1, end: 1.99, speaker: "A", speaker_name: "主持人 A" },
+      { text: "訊號的傳遞是一連串極為嚴密的閉迴路運算。", start: 1.99, end: 6.19, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第一步，", start: 6.14, end: 6.96, speaker: "A", speaker_name: "主持人 A" },
+      { text: "由線路上的比流器感應高壓大電流，", start: 6.96, end: 10.25, speaker: "A", speaker_name: "主持人 A" },
+      { text: "等比例轉換成二次側", start: 10.25, end: 12.09, speaker: "A", speaker_name: "主持人 A" },
+      { text: "5", start: 12.09, end: 12.3, speaker: "A", speaker_name: "主持人 A" },
+      { text: "安培或", start: 12.3, end: 12.92, speaker: "A", speaker_name: "主持人 A" },
+      { text: "110", start: 12.92, end: 13.53, speaker: "A", speaker_name: "主持人 A" },
+      { text: "伏特的安全訊號。", start: 13.53, end: 15.18, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第二步，", start: 15.18, end: 16.02, speaker: "A", speaker_name: "主持人 A" },
+      { text: "保護電驛接獲訊號後進行高速取樣與邏輯運算。", start: 16.02, end: 20.43, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第三步，", start: 20.43, end: 21.23, speaker: "A", speaker_name: "主持人 A" },
+      { text: "一旦確認電流超越安全門檻，", start: 21.23, end: 23.85, speaker: "A", speaker_name: "主持人 A" },
+      { text: "就會導通變電所直流", start: 23.85, end: 25.67, speaker: "A", speaker_name: "主持人 A" },
+      { text: "110", start: 25.67, end: 26.27, speaker: "A", speaker_name: "主持人 A" },
+      { text: "伏特的控制迴路。", start: 26.27, end: 27.89, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第四步，", start: 27.89, end: 28.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "直流電源強力驅動斷路器的跳脫線圈，", start: 28.72, end: 32.26, speaker: "A", speaker_name: "主持人 A" },
+      { text: "將故障區間物理性切離。", start: 32.26, end: 34.55, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這套流暢的反應，", start: 34.55, end: 36.39, speaker: "A", speaker_name: "主持人 A" },
+      { text: "必須遵循幾項嚴格的工程準則。", start: 36.39, end: 39.6, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 7,
+    dur: 43,
+    title: "保護電驛系統的六大設計準則",
+    audio_dur: 42.26,
+    clauses: [
+      { text: "一套優秀的保護電驛系統，", start: 0.1, end: 2.87, speaker: "A", speaker_name: "主持人 A" },
+      { text: "必須同時滿足六大黃金法則。", start: 2.87, end: 5.86, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第一是可靠性，", start: 5.81, end: 7.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "該動作時絕對要動，", start: 7.36, end: 9.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "不該動時絕不誤動。", start: 9.36, end: 11.35, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第二是快速性，", start: 11.35, end: 12.78, speaker: "A", speaker_name: "主持人 A" },
+      { text: "必須在", start: 12.78, end: 13.39, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.01", start: 13.39, end: 14.21, speaker: "A", speaker_name: "主持人 A" },
+      { text: "到", start: 14.21, end: 14.41, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.05", start: 14.41, end: 15.23, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒內切除故障。", start: 15.23, end: 16.66, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第三是選擇性，", start: 16.66, end: 18.06, speaker: "A", speaker_name: "主持人 A" },
+      { text: "只切離距離故障點最近的斷路器，", start: 18.06, end: 21.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "不影響其他正常用戶。", start: 21.05, end: 23.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第四是靈敏度，", start: 23.05, end: 24.62, speaker: "A", speaker_name: "主持人 A" },
+      { text: "連微小的漏電異常都能敏銳捕捉。", start: 24.62, end: 27.98, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第五是簡單性，", start: 27.98, end: 29.5, speaker: "A", speaker_name: "主持人 A" },
+      { text: "迴路越簡潔越不容易出錯。", start: 29.5, end: 32.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "最後是經濟性，", start: 32.12, end: 33.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "用合理的投資換取最大效益。", start: 33.72, end: 36.67, speaker: "A", speaker_name: "主持人 A" },
+      { text: "要討論這些電驛，", start: 36.67, end: 38.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們得先認識電力工程師常用的共通語言。", start: 38.31, end: 42.19, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 8,
+    dur: 40,
+    title: "ANSI與IEEE標準電力設備功能代號",
+    audio_dur: 39.02,
+    clauses: [
+      { text: "在電力圖紙上，", start: 0.1, end: 1.48, speaker: "A", speaker_name: "主持人 A" },
+      { text: "工程師不會寫長長的中文，", start: 1.48, end: 3.86, speaker: "A", speaker_name: "主持人 A" },
+      { text: "而是使用", start: 3.86, end: 4.65, speaker: "A", speaker_name: "主持人 A" },
+      { text: "ANSI", start: 4.65, end: 5.44, speaker: "A", speaker_name: "主持人 A" },
+      { text: "國際標準代號。", start: 5.44, end: 6.83, speaker: "A", speaker_name: "主持人 A" },
+      { text: "例如", start: 6.78, end: 7.21, speaker: "A", speaker_name: "主持人 A" },
+      { text: "27", start: 7.21, end: 7.64, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 7.64, end: 7.86, speaker: "A", speaker_name: "主持人 A" },
+      { text: "59", start: 7.86, end: 8.29, speaker: "A", speaker_name: "主持人 A" },
+      { text: "代表低電壓與過電壓電驛，", start: 8.29, end: 10.89, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50", start: 10.89, end: 11.32, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 11.32, end: 11.54, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51", start: 11.54, end: 11.97, speaker: "A", speaker_name: "主持人 A" },
+      { text: "代表瞬時與延時過電流電驛。", start: 11.97, end: 14.79, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50N", start: 14.79, end: 15.38, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 15.38, end: 15.58, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51N", start: 15.58, end: 16.17, speaker: "A", speaker_name: "主持人 A" },
+      { text: "專門處理接地過電流，", start: 16.17, end: 18.14, speaker: "A", speaker_name: "主持人 A" },
+      { text: "59Vo", start: 18.14, end: 18.93, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 18.93, end: 19.13, speaker: "A", speaker_name: "主持人 A" },
+      { text: "67N", start: 19.13, end: 19.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "則用於接地過電壓與方向性接地保護。", start: 19.72, end: 23.07, speaker: "A", speaker_name: "主持人 A" },
+      { text: "另外還有", start: 23.07, end: 24.02, speaker: "A", speaker_name: "主持人 A" },
+      { text: "86", start: 24.02, end: 24.49, speaker: "A", speaker_name: "主持人 A" },
+      { text: "閉鎖電驛以及", start: 24.49, end: 25.9, speaker: "A", speaker_name: "主持人 A" },
+      { text: "87", start: 25.9, end: 26.37, speaker: "A", speaker_name: "主持人 A" },
+      { text: "比例差流保護。", start: 26.37, end: 28.01, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這些數字就是變電所的共通密碼。", start: 28.01, end: 31.3, speaker: "A", speaker_name: "主持人 A" },
+      { text: "在這些代號中，", start: 31.3, end: 32.83, speaker: "A", speaker_name: "主持人 A" },
+      { text: "最基礎也最常遇到的是", start: 32.83, end: 35.02, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50", start: 35.02, end: 35.45, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 35.45, end: 35.67, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51，", start: 35.67, end: 36.33, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們來看看它們有何不同。", start: 36.33, end: 38.95, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 9,
+    dur: 37,
+    title: "瞬時過電流 50 vs 延時過電流 51",
+    audio_dur: 35.66,
+    clauses: [
+      { text: "代號", start: 0.1, end: 0.5, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50", start: 0.5, end: 0.9, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 0.9, end: 1.1, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51", start: 1.1, end: 1.49, speaker: "A", speaker_name: "主持人 A" },
+      { text: "雖然都是過電流保護，", start: 1.49, end: 3.48, speaker: "A", speaker_name: "主持人 A" },
+      { text: "但任務截然不同。", start: 3.48, end: 5.08, speaker: "A", speaker_name: "主持人 A" },
+      { text: "ANSI", start: 5.03, end: 5.82, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50", start: 5.82, end: 6.21, speaker: "A", speaker_name: "主持人 A" },
+      { text: "是瞬時過電流保護，", start: 6.21, end: 7.99, speaker: "A", speaker_name: "主持人 A" },
+      { text: "專門處理高達", start: 7.99, end: 9.17, speaker: "A", speaker_name: "主持人 A" },
+      { text: "10", start: 9.17, end: 9.57, speaker: "A", speaker_name: "主持人 A" },
+      { text: "到", start: 9.57, end: 9.77, speaker: "A", speaker_name: "主持人 A" },
+      { text: "30", start: 9.77, end: 10.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "倍電流的金屬大短路，", start: 10.16, end: 12.14, speaker: "A", speaker_name: "主持人 A" },
+      { text: "要求零延遲，", start: 12.14, end: 13.32, speaker: "A", speaker_name: "主持人 A" },
+      { text: "在", start: 13.32, end: 13.52, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.01", start: 13.52, end: 14.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "到", start: 14.31, end: 14.51, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.04", start: 14.51, end: 15.3, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒內極速跳脫，", start: 15.3, end: 16.68, speaker: "A", speaker_name: "主持人 A" },
+      { text: "阻斷毀滅性電弧。", start: 16.68, end: 18.26, speaker: "A", speaker_name: "主持人 A" },
+      { text: "而", start: 18.26, end: 18.45, speaker: "A", speaker_name: "主持人 A" },
+      { text: "ANSI", start: 18.45, end: 19.22, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51", start: 19.22, end: 19.6, speaker: "A", speaker_name: "主持人 A" },
+      { text: "是延時過電流保護，", start: 19.6, end: 21.32, speaker: "A", speaker_name: "主持人 A" },
+      { text: "處理", start: 21.32, end: 21.7, speaker: "A", speaker_name: "主持人 A" },
+      { text: "1.2", start: 21.7, end: 22.27, speaker: "A", speaker_name: "主持人 A" },
+      { text: "到", start: 22.27, end: 22.46, speaker: "A", speaker_name: "主持人 A" },
+      { text: "3", start: 22.46, end: 22.66, speaker: "A", speaker_name: "主持人 A" },
+      { text: "倍的輕微過載，", start: 22.66, end: 23.99, speaker: "A", speaker_name: "主持人 A" },
+      { text: "具備反時限特性，", start: 23.99, end: 25.52, speaker: "A", speaker_name: "主持人 A" },
+      { text: "超越門檻越少允許忍耐越久，", start: 25.52, end: 28.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "避免因馬達啟動等暫態過載而誤跳脫。", start: 28.0, end: 31.25, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這種忍耐時間的設計，", start: 31.25, end: 33.23, speaker: "A", speaker_name: "主持人 A" },
+      { text: "背後有精密的物理學原理。", start: 33.23, end: 35.6, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 10,
+    dur: 40,
+    title: "51 電驛反時限物理機制與導體熱容量",
+    audio_dur: 38.76,
+    clauses: [
+      { text: "延時過電流電驛之所以設計成反時限，", start: 0.1, end: 3.57, speaker: "A", speaker_name: "主持人 A" },
+      { text: "是因為電氣設備的發熱遵循焦耳熱效應。", start: 3.57, end: 7.25, speaker: "A", speaker_name: "主持人 A" },
+      { text: "導體發熱功率等於電流平方乘以電阻，", start: 7.2, end: 10.79, speaker: "A", speaker_name: "主持人 A" },
+      { text: "累積的熱量上限是一個常數。", start: 10.79, end: 13.54, speaker: "A", speaker_name: "主持人 A" },
+      { text: "當故障電流增加為", start: 13.54, end: 15.23, speaker: "A", speaker_name: "主持人 A" },
+      { text: "2", start: 15.23, end: 15.45, speaker: "A", speaker_name: "主持人 A" },
+      { text: "倍時，", start: 15.45, end: 16.08, speaker: "A", speaker_name: "主持人 A" },
+      { text: "設備能承受的時間會縮短為", start: 16.08, end: 18.63, speaker: "A", speaker_name: "主持人 A" },
+      { text: "4", start: 18.63, end: 18.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "分之", start: 18.84, end: 19.26, speaker: "A", speaker_name: "主持人 A" },
+      { text: "1。", start: 19.26, end: 19.69, speaker: "A", speaker_name: "主持人 A" },
+      { text: "如果電流暴增為", start: 19.69, end: 21.03, speaker: "A", speaker_name: "主持人 A" },
+      { text: "10", start: 21.03, end: 21.42, speaker: "A", speaker_name: "主持人 A" },
+      { text: "倍，", start: 21.42, end: 21.8, speaker: "A", speaker_name: "主持人 A" },
+      { text: "絕緣耐受時間會暴跌為", start: 21.8, end: 23.73, speaker: "A", speaker_name: "主持人 A" },
+      { text: "100", start: 23.73, end: 24.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "分之", start: 24.31, end: 24.69, speaker: "A", speaker_name: "主持人 A" },
+      { text: "1。", start: 24.69, end: 25.07, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51", start: 25.07, end: 25.47, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛的反時限曲線，", start: 25.47, end: 27.26, speaker: "A", speaker_name: "主持人 A" },
+      { text: "就是為了精準貼合設備的熱累積極限，", start: 27.26, end: 30.63, speaker: "A", speaker_name: "主持人 A" },
+      { text: "在安全範圍內給予散熱時間，", start: 30.63, end: 33.2, speaker: "A", speaker_name: "主持人 A" },
+      { text: "一旦過熱則果斷跳脫。", start: 33.2, end: 35.19, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這種曲線在工程上有標準的分類。", start: 35.19, end: 38.69, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 11,
+    dur: 38,
+    title: "標準 TCC 時間電流特性曲線家族",
+    audio_dur: 36.82,
+    clauses: [
+      { text: "根據國際標準，", start: 0.1, end: 1.66, speaker: "A", speaker_name: "主持人 A" },
+      { text: "TCC", start: 1.66, end: 2.33, speaker: "A", speaker_name: "主持人 A" },
+      { text: "曲線家族主要分為四大類。", start: 2.33, end: 5.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第一是標準反時限，", start: 4.95, end: 6.98, speaker: "A", speaker_name: "主持人 A" },
+      { text: "斜率較溫和，", start: 6.98, end: 8.33, speaker: "A", speaker_name: "主持人 A" },
+      { text: "適合一般工廠配電饋線。", start: 8.33, end: 10.8, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第二是非常反時限，", start: 10.8, end: 12.7, speaker: "A", speaker_name: "主持人 A" },
+      { text: "斜率較陡峭，", start: 12.7, end: 13.96, speaker: "A", speaker_name: "主持人 A" },
+      { text: "適合長距離輸配電線路。", start: 13.96, end: 16.27, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第三是極度反時限，", start: 16.27, end: 18.11, speaker: "A", speaker_name: "主持人 A" },
+      { text: "斜率極度陡峭，", start: 18.11, end: 19.53, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與熱效應二次方精準吻合，", start: 19.53, end: 21.97, speaker: "A", speaker_name: "主持人 A" },
+      { text: "專門保護易受熱損毀的變壓器與高壓電纜。", start: 21.97, end: 25.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第四是定時限，", start: 25.84, end: 27.28, speaker: "A", speaker_name: "主持人 A" },
+      { text: "只要電流過門檻就開始固定延遲倒數。", start: 27.28, end: 30.79, speaker: "A", speaker_name: "主持人 A" },
+      { text: "要讓這些曲線在現場發揮作用，", start: 30.79, end: 33.77, speaker: "A", speaker_name: "主持人 A" },
+      { text: "必須透過兩大關鍵參數來調校。", start: 33.77, end: 36.75, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 12,
+    dur: 39,
+    title: "51 電驛關鍵設定參數 Tap 與 TMS",
+    audio_dur: 37.61,
+    clauses: [
+      { text: "現場工程師調校", start: 0.1, end: 1.65, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51", start: 1.65, end: 2.09, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛時，", start: 2.09, end: 2.97, speaker: "A", speaker_name: "主持人 A" },
+      { text: "主要調整兩個參數。", start: 2.97, end: 4.96, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第一個是始動電流", start: 4.91, end: 6.34, speaker: "A", speaker_name: "主持人 A" },
+      { text: "Tap，", start: 6.34, end: 7.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "決定電驛什麼時候開始關注，", start: 7.05, end: 9.38, speaker: "A", speaker_name: "主持人 A" },
+      { text: "通常設定在全載電流的", start: 9.38, end: 11.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "1.15", start: 11.16, end: 11.87, speaker: "A", speaker_name: "主持人 A" },
+      { text: "到", start: 11.87, end: 12.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "1.3", start: 12.05, end: 12.59, speaker: "A", speaker_name: "主持人 A" },
+      { text: "倍，", start: 12.59, end: 12.95, speaker: "A", speaker_name: "主持人 A" },
+      { text: "超過門檻就啟動內部計時。", start: 12.95, end: 15.09, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第二個是時間槓桿", start: 15.09, end: 16.77, speaker: "A", speaker_name: "主持人 A" },
+      { text: "TMS，", start: 16.77, end: 17.62, speaker: "A", speaker_name: "主持人 A" },
+      { text: "決定動作的延遲時間。", start: 17.62, end: 19.73, speaker: "A", speaker_name: "主持人 A" },
+      { text: "在雙對數座標圖上，", start: 19.73, end: 21.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "調整", start: 21.72, end: 22.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "TMS", start: 22.16, end: 22.82, speaker: "A", speaker_name: "主持人 A" },
+      { text: "等於將整條", start: 22.82, end: 23.93, speaker: "A", speaker_name: "主持人 A" },
+      { text: "TCC", start: 23.93, end: 24.59, speaker: "A", speaker_name: "主持人 A" },
+      { text: "曲線垂直上下平移，", start: 24.59, end: 26.58, speaker: "A", speaker_name: "主持人 A" },
+      { text: "完全不改變斜率。", start: 26.58, end: 28.35, speaker: "A", speaker_name: "主持人 A" },
+      { text: "數值設定越小，", start: 28.35, end: 30.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "跳脫越敏捷。", start: 30.05, end: 31.5, speaker: "A", speaker_name: "主持人 A" },
+      { text: "透過", start: 31.5, end: 31.92, speaker: "A", speaker_name: "主持人 A" },
+      { text: "TMS", start: 31.92, end: 32.54, speaker: "A", speaker_name: "主持人 A" },
+      { text: "的上下平移，", start: 32.54, end: 33.79, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們就能實現多級設備之間的保護協調。", start: 33.79, end: 37.55, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 13,
+    dur: 40,
+    title: "保護協調與階梯選擇性跳脫",
+    audio_dur: 39.38,
+    clauses: [
+      { text: "保護協調的目標，", start: 0.1, end: 1.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "是確保故障發生時只停電最小區域。", start: 1.84, end: 5.33, speaker: "A", speaker_name: "主持人 A" },
+      { text: "當下游饋線發生短路時，", start: 5.28, end: 7.6, speaker: "A", speaker_name: "主持人 A" },
+      { text: "下游", start: 7.6, end: 8.02, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51", start: 8.02, end: 8.44, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛因為", start: 8.44, end: 9.28, speaker: "A", speaker_name: "主持人 A" },
+      { text: "TMS", start: 9.28, end: 9.92, speaker: "A", speaker_name: "主持人 A" },
+      { text: "設定較小，", start: 9.92, end: 10.97, speaker: "A", speaker_name: "主持人 A" },
+      { text: "會在", start: 10.97, end: 11.39, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.2", start: 11.39, end: 12.03, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒優先跳脫切離。", start: 12.03, end: 13.71, speaker: "A", speaker_name: "主持人 A" },
+      { text: "同時上游變壓器的", start: 13.71, end: 15.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51", start: 15.36, end: 15.77, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛設定較大，", start: 15.77, end: 17.21, speaker: "A", speaker_name: "主持人 A" },
+      { text: "作為後衛防線，", start: 17.21, end: 18.65, speaker: "A", speaker_name: "主持人 A" },
+      { text: "需要", start: 18.65, end: 19.07, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.55", start: 19.07, end: 19.89, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒才會動作。", start: 19.89, end: 21.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "兩者之間保持約", start: 21.12, end: 22.52, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.3", start: 22.52, end: 23.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "到", start: 23.12, end: 23.32, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.4", start: 23.32, end: 23.93, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒的協調時間差", start: 23.93, end: 25.32, speaker: "A", speaker_name: "主持人 A" },
+      { text: "CTI。", start: 25.32, end: 26.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "只要下游成功切離故障，", start: 26.12, end: 28.51, speaker: "A", speaker_name: "主持人 A" },
+      { text: "上游電驛就會立刻復歸，", start: 28.51, end: 30.89, speaker: "A", speaker_name: "主持人 A" },
+      { text: "其他正常線路完全不受影響。", start: 30.89, end: 33.7, speaker: "A", speaker_name: "主持人 A" },
+      { text: "處理完相間短路後，", start: 33.7, end: 35.64, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們接著來看更常見的單相接地故障。", start: 35.64, end: 39.3, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 14,
+    dur: 37,
+    title: "單相接地故障特性與隱蔽漏電捕捉",
+    audio_dur: 35.76,
+    clauses: [
+      { text: "在現場統計中，", start: 0.1, end: 1.61, speaker: "A", speaker_name: "主持人 A" },
+      { text: "單相接地事故占了所有電力故障的百分之", start: 1.61, end: 5.49, speaker: "A", speaker_name: "主持人 A" },
+      { text: "70", start: 5.49, end: 5.92, speaker: "A", speaker_name: "主持人 A" },
+      { text: "到", start: 5.92, end: 6.14, speaker: "A", speaker_name: "主持人 A" },
+      { text: "80，", start: 6.14, end: 6.79, speaker: "A", speaker_name: "主持人 A" },
+      { text: "例如電纜絕緣老化破皮或受潮閃絡。", start: 6.79, end: 10.24, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這種接地故障的短路電流通常很小，", start: 10.19, end: 13.42, speaker: "A", speaker_name: "主持人 A" },
+      { text: "往往低於相過電流電驛", start: 13.42, end: 15.43, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51", start: 15.43, end: 15.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "的始動門檻，", start: 15.84, end: 17.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "形成相電驛的盲區。", start: 17.05, end: 18.86, speaker: "A", speaker_name: "主持人 A" },
+      { text: "如果沒有及時處理，", start: 18.86, end: 20.73, speaker: "A", speaker_name: "主持人 A" },
+      { text: "小漏電會漸漸演變成大短路。", start: 20.73, end: 23.43, speaker: "A", speaker_name: "主持人 A" },
+      { text: "因此我們必須依靠專門的中性點接地過電流電驛", start: 23.43, end: 27.44, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50N", start: 27.44, end: 28.02, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 28.02, end: 28.21, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51N，", start: 28.21, end: 28.97, speaker: "A", speaker_name: "主持人 A" },
+      { text: "敏銳捕捉微小的殘餘漏電電流。", start: 28.97, end: 31.65, speaker: "A", speaker_name: "主持人 A" },
+      { text: "那麼這個殘餘電流是怎麼量測到的呢。", start: 31.65, end: 35.7, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 15,
+    dur: 36,
+    title: "三相電路殘餘電流接法運作圖解",
+    audio_dur: 35.4,
+    clauses: [
+      { text: "為了捕捉接地漏電，", start: 0.1, end: 1.93, speaker: "A", speaker_name: "主持人 A" },
+      { text: "工程上採用了聰明的三相殘餘電流接法。", start: 1.93, end: 5.59, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們把", start: 5.54, end: 6.11, speaker: "A", speaker_name: "主持人 A" },
+      { text: "A", start: 6.11, end: 6.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相、", start: 6.31, end: 6.69, speaker: "A", speaker_name: "主持人 A" },
+      { text: "B", start: 6.69, end: 6.88, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相與", start: 6.88, end: 7.27, speaker: "A", speaker_name: "主持人 A" },
+      { text: "C", start: 7.27, end: 7.46, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相三個比流器的二次側同極性端，", start: 7.46, end: 10.34, speaker: "A", speaker_name: "主持人 A" },
+      { text: "各自經過相電驛後並聯匯流在一起，", start: 10.34, end: 13.42, speaker: "A", speaker_name: "主持人 A" },
+      { text: "接入中性線迴路，", start: 13.42, end: 14.95, speaker: "A", speaker_name: "主持人 A" },
+      { text: "再經過", start: 14.95, end: 15.53, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51N", start: 15.53, end: 16.11, speaker: "A", speaker_name: "主持人 A" },
+      { text: "接地電驛接回大地。", start: 16.11, end: 17.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "正常情況下，", start: 17.84, end: 19.18, speaker: "A", speaker_name: "主持人 A" },
+      { text: "三相電流互相抵銷，", start: 19.18, end: 21.19, speaker: "A", speaker_name: "主持人 A" },
+      { text: "中性線電流為零。", start: 21.19, end: 22.98, speaker: "A", speaker_name: "主持人 A" },
+      { text: "一旦有一相發生接地漏電，", start: 22.98, end: 25.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "打破了平衡，", start: 25.36, end: 26.55, speaker: "A", speaker_name: "主持人 A" },
+      { text: "不平衡電流就會灌入中性線，", start: 26.55, end: 29.13, speaker: "A", speaker_name: "主持人 A" },
+      { text: "立刻被", start: 29.13, end: 29.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51N", start: 29.72, end: 30.32, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛感知。", start: 30.32, end: 31.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這個現象可以用向量數學來完美證明。", start: 31.31, end: 35.34, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 16,
+    dur: 38,
+    title: "三相殘餘電流向量數學推導",
+    audio_dur: 37.39,
+    clauses: [
+      { text: "從交流電向量來分析，", start: 0.1, end: 2.26, speaker: "A", speaker_name: "主持人 A" },
+      { text: "正常三相平衡時，", start: 2.26, end: 3.98, speaker: "A", speaker_name: "主持人 A" },
+      { text: "A", start: 3.98, end: 4.2, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相、", start: 4.2, end: 4.63, speaker: "A", speaker_name: "主持人 A" },
+      { text: "B", start: 4.63, end: 4.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相與", start: 4.84, end: 5.28, speaker: "A", speaker_name: "主持人 A" },
+      { text: "C", start: 5.28, end: 5.49, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相電流大小相等，", start: 5.49, end: 7.22, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相位各相差", start: 7.22, end: 8.3, speaker: "A", speaker_name: "主持人 A" },
+      { text: "120", start: 8.3, end: 8.94, speaker: "A", speaker_name: "主持人 A" },
+      { text: "度，", start: 8.94, end: 9.37, speaker: "A", speaker_name: "主持人 A" },
+      { text: "三者向量相加結果等於零，", start: 9.37, end: 11.96, speaker: "A", speaker_name: "主持人 A" },
+      { text: "所以中性線完全沒有電流。", start: 11.96, end: 14.55, speaker: "A", speaker_name: "主持人 A" },
+      { text: "但是當", start: 14.5, end: 15.11, speaker: "A", speaker_name: "主持人 A" },
+      { text: "A", start: 15.11, end: 15.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相發生接地故障時，", start: 15.31, end: 17.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "A", start: 17.12, end: 17.32, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相電流劇增且相位偏轉，", start: 17.32, end: 19.54, speaker: "A", speaker_name: "主持人 A" },
+      { text: "三相向量相加不再是零，", start: 19.54, end: 21.76, speaker: "A", speaker_name: "主持人 A" },
+      { text: "而是產生了三倍的零相電流", start: 21.76, end: 24.18, speaker: "A", speaker_name: "主持人 A" },
+      { text: "3I0。", start: 24.18, end: 24.99, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這股零相電流流過中性線，", start: 24.99, end: 27.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "觸發", start: 27.72, end: 28.18, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51N", start: 28.18, end: 28.86, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛進行延時跳脫。", start: 28.86, end: 30.91, speaker: "A", speaker_name: "主持人 A" },
+      { text: "不過在複雜電網中，", start: 30.91, end: 32.77, speaker: "A", speaker_name: "主持人 A" },
+      { text: "光看電流大小還不夠，", start: 32.77, end: 34.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "有時我們還需要判斷方向。", start: 34.84, end: 37.33, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 17,
+    dur: 41,
+    title: "方向性接地 67N vs 非方向性 51N",
+    audio_dur: 39.96,
+    clauses: [
+      { text: "在環狀或雙電源系統中，", start: 0.1, end: 2.42, speaker: "A", speaker_name: "主持人 A" },
+      { text: "非方向性的", start: 2.42, end: 3.47, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51N", start: 3.47, end: 4.1, speaker: "A", speaker_name: "主持人 A" },
+      { text: "有一個致命盲點。", start: 4.1, end: 5.79, speaker: "A", speaker_name: "主持人 A" },
+      { text: "當鄰近健全線路發生接地時，", start: 5.74, end: 8.48, speaker: "A", speaker_name: "主持人 A" },
+      { text: "健全側的電容充電電流可能倒灌回來，", start: 8.48, end: 12.07, speaker: "A", speaker_name: "主持人 A" },
+      { text: "導致", start: 12.07, end: 12.5, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51N", start: 12.5, end: 13.13, speaker: "A", speaker_name: "主持人 A" },
+      { text: "誤跳脫。", start: 13.13, end: 13.97, speaker: "A", speaker_name: "主持人 A" },
+      { text: "為了防止誤動，", start: 13.97, end: 15.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們改用", start: 15.31, end: 16.08, speaker: "A", speaker_name: "主持人 A" },
+      { text: "67N", start: 16.08, end: 16.65, speaker: "A", speaker_name: "主持人 A" },
+      { text: "方向性接地過電流電驛。", start: 16.65, end: 18.75, speaker: "A", speaker_name: "主持人 A" },
+      { text: "67N", start: 18.75, end: 19.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "不僅看零相電流的大小，", start: 19.36, end: 21.57, speaker: "A", speaker_name: "主持人 A" },
+      { text: "還同時比對開三角比壓器提供的零相電壓相位角。", start: 21.57, end: 26.01, speaker: "A", speaker_name: "主持人 A" },
+      { text: "透過電壓與電流的相位差，", start: 26.01, end: 28.4, speaker: "A", speaker_name: "主持人 A" },
+      { text: "67N", start: 28.4, end: 28.99, speaker: "A", speaker_name: "主持人 A" },
+      { text: "能精準判定故障是在前方還是後方，", start: 28.99, end: 32.17, speaker: "A", speaker_name: "主持人 A" },
+      { text: "實現絕對不誤動的智慧選擇性。", start: 32.17, end: 34.95, speaker: "A", speaker_name: "主持人 A" },
+      { text: "接下來我們看主變壓器的靈魂保護：", start: 34.95, end: 38.71, speaker: "A", speaker_name: "主持人 A" },
+      { text: "差流保護。", start: 38.71, end: 39.89, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 18,
+    dur: 40,
+    title: "ANSI 87 比例差流保護與克希荷夫定律",
+    audio_dur: 38.57,
+    clauses: [
+      { text: "主變壓器是變電所心臟，", start: 0.1, end: 2.41, speaker: "A", speaker_name: "主持人 A" },
+      { text: "它的核心防線是", start: 2.41, end: 3.87, speaker: "A", speaker_name: "主持人 A" },
+      { text: "ANSI", start: 3.87, end: 4.71, speaker: "A", speaker_name: "主持人 A" },
+      { text: "87", start: 4.71, end: 5.13, speaker: "A", speaker_name: "主持人 A" },
+      { text: "比例差流保護。", start: 5.13, end: 6.6, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這個原理建立在國中物理學過的克希荷夫電流定律：", start: 6.55, end: 10.81, speaker: "A", speaker_name: "主持人 A" },
+      { text: "流入保護區的電流必須等於流出的電流。", start: 10.81, end: 14.14, speaker: "A", speaker_name: "主持人 A" },
+      { text: "正常運轉或區外故障時，", start: 14.14, end: 16.4, speaker: "A", speaker_name: "主持人 A" },
+      { text: "變壓器兩側電流經比例換算後相等，", start: 16.4, end: 19.68, speaker: "A", speaker_name: "主持人 A" },
+      { text: "相減差電流等於零，", start: 19.68, end: 21.53, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛保持安靜。", start: 21.53, end: 22.96, speaker: "A", speaker_name: "主持人 A" },
+      { text: "一旦變壓器內部發生匝間短路，", start: 22.96, end: 25.76, speaker: "A", speaker_name: "主持人 A" },
+      { text: "流入不等於流出，", start: 25.76, end: 27.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "產生巨大差電流，", start: 27.36, end: 28.96, speaker: "A", speaker_name: "主持人 A" },
+      { text: "87", start: 28.96, end: 29.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛會在", start: 29.36, end: 30.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.01", start: 30.16, end: 30.96, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒內極速跳脫兩側斷路器。", start: 30.96, end: 33.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "當這種重大故障發生時，", start: 33.36, end: 35.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "還需要另一個安全鎖定機制。", start: 35.72, end: 38.5, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 19,
+    dur: 40,
+    title: "ANSI 86 閉鎖電驛：電網安全防爆煞車",
+    audio_dur: 38.66,
+    clauses: [
+      { text: "當", start: 0.1, end: 0.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "87", start: 0.31, end: 0.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "差流保護或", start: 0.72, end: 1.75, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50", start: 1.75, end: 2.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "大短路保護動作時，", start: 2.16, end: 4.02, speaker: "A", speaker_name: "主持人 A" },
+      { text: "代表設備內部已經發生嚴重的結構性損壞。", start: 4.02, end: 7.94, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這時", start: 7.89, end: 8.28, speaker: "A", speaker_name: "主持人 A" },
+      { text: "ANSI", start: 8.28, end: 9.06, speaker: "A", speaker_name: "主持人 A" },
+      { text: "86", start: 9.06, end: 9.45, speaker: "A", speaker_name: "主持人 A" },
+      { text: "閉鎖電驛會立刻激磁，", start: 9.45, end: 11.41, speaker: "A", speaker_name: "主持人 A" },
+      { text: "並且實體鎖定斷路器的合閘迴路，", start: 11.41, end: 14.35, speaker: "A", speaker_name: "主持人 A" },
+      { text: "同時切斷", start: 14.35, end: 15.14, speaker: "A", speaker_name: "主持人 A" },
+      { text: "SCADA", start: 15.14, end: 16.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "遠端遙控機能。", start: 16.12, end: 17.49, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這樣做是為了嚴防調度員或自動系統在不知情的情況下盲目二次送電，", start: 17.49, end: 23.67, speaker: "A", speaker_name: "主持人 A" },
+      { text: "否則可能在現場引發毀滅性大爆炸。", start: 23.67, end: 26.86, speaker: "A", speaker_name: "主持人 A" },
+      { text: "86", start: 26.86, end: 27.3, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛必須由工程師親赴現場確認安全後，", start: 27.3, end: 31.24, speaker: "A", speaker_name: "主持人 A" },
+      { text: "手動旋轉面板旋鈕才能復歸。", start: 31.24, end: 34.09, speaker: "A", speaker_name: "主持人 A" },
+      { text: "除了電流，", start: 34.09, end: 35.21, speaker: "A", speaker_name: "主持人 A" },
+      { text: "系統電壓同樣需要專門的守門員。", start: 35.21, end: 38.59, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 20,
+    dur: 39,
+    title: "系統電壓異常守門員：27、59 與 59Vo",
+    audio_dur: 38.33,
+    clauses: [
+      { text: "電力系統的電壓品質直接關係到設備壽命。", start: 0.1, end: 4.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "27", start: 4.0, end: 4.41, speaker: "A", speaker_name: "主持人 A" },
+      { text: "低電壓電驛在電壓跌破百分之", start: 4.41, end: 7.08, speaker: "A", speaker_name: "主持人 A" },
+      { text: "80", start: 7.08, end: 7.5, speaker: "A", speaker_name: "主持人 A" },
+      { text: "時動作，", start: 7.5, end: 8.32, speaker: "A", speaker_name: "主持人 A" },
+      { text: "防止馬達因為欠壓抽取大電流而過熱燒毀。", start: 8.32, end: 12.22, speaker: "A", speaker_name: "主持人 A" },
+      { text: "59", start: 12.22, end: 12.63, speaker: "A", speaker_name: "主持人 A" },
+      { text: "過電壓電驛在電壓飆升突破百分之", start: 12.63, end: 15.66, speaker: "A", speaker_name: "主持人 A" },
+      { text: "120", start: 15.66, end: 16.27, speaker: "A", speaker_name: "主持人 A" },
+      { text: "時動作，", start: 16.27, end: 17.08, speaker: "A", speaker_name: "主持人 A" },
+      { text: "防止雷擊或輕載引發的高壓擊穿設備絕緣。", start: 17.08, end: 20.93, speaker: "A", speaker_name: "主持人 A" },
+      { text: "而", start: 20.93, end: 21.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "59Vo", start: 21.12, end: 21.89, speaker: "A", speaker_name: "主持人 A" },
+      { text: "接地過電壓電驛，", start: 21.89, end: 23.43, speaker: "A", speaker_name: "主持人 A" },
+      { text: "則是配合開三角比壓器，", start: 23.43, end: 25.56, speaker: "A", speaker_name: "主持人 A" },
+      { text: "在非接地系統發生單相接地時感應出零相電壓並發出警報。", start: 25.56, end: 30.57, speaker: "A", speaker_name: "主持人 A" },
+      { text: "看完了所有的電驛原理，", start: 30.57, end: 32.8, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們把理論帶入實際案例，", start: 32.8, end: 35.23, speaker: "A", speaker_name: "主持人 A" },
+      { text: "看看第一變電所發生的火警事故。", start: 35.23, end: 38.26, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 21,
+    dur: 38,
+    title: "災難降臨：HC-18 電容器火警現場還原",
+    audio_dur: 36.89,
+    clauses: [
+      { text: "這次事故發生在第一變電所頂樓開關房。", start: 0.1, end: 4.01, speaker: "A", speaker_name: "主持人 A" },
+      { text: "現場一字排開安裝了五座開關盤，", start: 3.96, end: 7.27, speaker: "A", speaker_name: "主持人 A" },
+      { text: "最右側的", start: 7.27, end: 8.15, speaker: "A", speaker_name: "主持人 A" },
+      { text: "HC-18", start: 8.15, end: 9.25, speaker: "A", speaker_name: "主持人 A" },
+      { text: "盤就是本次事故的起火點。", start: 9.25, end: 11.9, speaker: "A", speaker_name: "主持人 A" },
+      { text: "當", start: 11.9, end: 12.1, speaker: "A", speaker_name: "主持人 A" },
+      { text: "HC-18", start: 12.1, end: 13.08, speaker: "A", speaker_name: "主持人 A" },
+      { text: "盤發生爆炸起火後，", start: 13.08, end: 14.85, speaker: "A", speaker_name: "主持人 A" },
+      { text: "高溫濃煙與電弧夾帶易燃絕緣油，", start: 14.85, end: 17.8, speaker: "A", speaker_name: "主持人 A" },
+      { text: "順著頂部未封堵的纜線架向左側橫向蔓延，", start: 17.8, end: 21.53, speaker: "A", speaker_name: "主持人 A" },
+      { text: "接連吞噬了鄰近的", start: 21.53, end: 23.1, speaker: "A", speaker_name: "主持人 A" },
+      { text: "HC-17、", start: 23.1, end: 24.28, speaker: "A", speaker_name: "主持人 A" },
+      { text: "HD-17、", start: 24.28, end: 25.46, speaker: "A", speaker_name: "主持人 A" },
+      { text: "HD-16", start: 25.46, end: 26.45, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 26.45, end: 26.64, speaker: "A", speaker_name: "主持人 A" },
+      { text: "HD-15", start: 26.64, end: 27.62, speaker: "A", speaker_name: "主持人 A" },
+      { text: "共五座開關盤，", start: 27.62, end: 29.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "造成整體系統嚴重毀損。", start: 29.0, end: 31.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們接著深入檢視這座起火盤體的規格與原始保護配置。", start: 31.16, end: 36.8, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 22,
+    dur: 37,
+    title: "實務案例：第一變電所電容器火警事故",
+    audio_dur: 35.52,
+    clauses: [
+      { text: "起火的受災設備是", start: 0.1, end: 1.86, speaker: "A", speaker_name: "主持人 A" },
+      { text: "103H-SC2", start: 1.86, end: 3.62, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電容器組，", start: 3.62, end: 4.73, speaker: "A", speaker_name: "主持人 A" },
+      { text: "盤號", start: 4.73, end: 5.17, speaker: "A", speaker_name: "主持人 A" },
+      { text: "HC-18。", start: 5.17, end: 6.49, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這組電容器額定容量為", start: 6.44, end: 8.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "2400kVAR，", start: 8.36, end: 10.09, speaker: "A", speaker_name: "主持人 A" },
+      { text: "實裝", start: 10.09, end: 10.48, speaker: "A", speaker_name: "主持人 A" },
+      { text: "3288kVAR，", start: 10.48, end: 12.21, speaker: "A", speaker_name: "主持人 A" },
+      { text: "採用", start: 12.21, end: 12.6, speaker: "A", speaker_name: "主持人 A" },
+      { text: "12kV", start: 12.6, end: 13.37, speaker: "A", speaker_name: "主持人 A" },
+      { text: "雙", start: 13.37, end: 13.56, speaker: "A", speaker_name: "主持人 A" },
+      { text: "Y", start: 13.56, end: 13.75, speaker: "A", speaker_name: "主持人 A" },
+      { text: "接法並聯運轉，", start: 13.75, end: 15.1, speaker: "A", speaker_name: "主持人 A" },
+      { text: "主要用於改善功率因數與穩定母線電壓。", start: 15.1, end: 18.56, speaker: "A", speaker_name: "主持人 A" },
+      { text: "盤內原本配置了", start: 18.56, end: 20.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50、", start: 20.0, end: 20.61, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51、", start: 20.61, end: 21.23, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50N、", start: 21.23, end: 22.05, speaker: "A", speaker_name: "主持人 A" },
+      { text: "51N，", start: 22.05, end: 22.87, speaker: "A", speaker_name: "主持人 A" },
+      { text: "以及專門保護電容器中性點不平衡的", start: 22.87, end: 26.15, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50NC", start: 26.15, end: 26.97, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電驛。", start: 26.97, end: 27.59, speaker: "A", speaker_name: "主持人 A" },
+      { text: "原本看似完善的保護配置，", start: 27.59, end: 29.92, speaker: "A", speaker_name: "主持人 A" },
+      { text: "卻因為一個細節引發了重大災害。", start: 29.92, end: 32.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們來看當天的時間軸。", start: 32.84, end: 35.45, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 23,
+    dur: 42,
+    title: "事故發展完整時間軸：15 分鐘延燒演變",
+    audio_dur: 41.3,
+    clauses: [
+      { text: "事故發生在凌晨，", start: 0.1, end: 1.95, speaker: "A", speaker_name: "主持人 A" },
+      { text: "時間軸非常關鍵。", start: 1.95, end: 3.8, speaker: "A", speaker_name: "主持人 A" },
+      { text: "凌晨", start: 3.75, end: 4.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "00:44:51，", start: 4.16, end: 6.01, speaker: "A", speaker_name: "主持人 A" },
+      { text: "盤內單顆電容器絕緣擊穿，", start: 6.01, end: 8.48, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50NC", start: 8.48, end: 9.3, speaker: "A", speaker_name: "主持人 A" },
+      { text: "中性點不平衡電驛立刻動作並發出警報。", start: 9.3, end: 13.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "然而此時高壓電源並未切斷，", start: 13.0, end: 15.93, speaker: "A", speaker_name: "主持人 A" },
+      { text: "高壓持續通電加熱長達", start: 15.93, end: 18.18, speaker: "A", speaker_name: "主持人 A" },
+      { text: "15", start: 18.18, end: 18.62, speaker: "A", speaker_name: "主持人 A" },
+      { text: "分鐘。", start: 18.62, end: 19.3, speaker: "A", speaker_name: "主持人 A" },
+      { text: "到了", start: 19.3, end: 19.7, speaker: "A", speaker_name: "主持人 A" },
+      { text: "01:00:26，", start: 19.7, end: 21.5, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電容器內部絕緣油劇烈汽化爆裂，", start: 21.5, end: 24.49, speaker: "A", speaker_name: "主持人 A" },
+      { text: "演變成三相短路大火，", start: 24.49, end: 26.49, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50", start: 26.49, end: 26.89, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 26.89, end: 27.09, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50N", start: 27.09, end: 27.69, speaker: "A", speaker_name: "主持人 A" },
+      { text: "才跳脫斷路器。", start: 27.69, end: 29.09, speaker: "A", speaker_name: "主持人 A" },
+      { text: "但噴濺的易燃油被電弧引燃，", start: 29.09, end: 31.71, speaker: "A", speaker_name: "主持人 A" },
+      { text: "大火沿著纜線架蔓延，", start: 31.71, end: 33.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "在幾分鐘內接連燒毀了鄰近的四座開關盤。", start: 33.72, end: 37.55, speaker: "A", speaker_name: "主持人 A" },
+      { text: "為什麼這", start: 37.55, end: 38.42, speaker: "A", speaker_name: "主持人 A" },
+      { text: "15", start: 38.42, end: 38.85, speaker: "A", speaker_name: "主持人 A" },
+      { text: "分鐘內電源沒有切斷呢。", start: 38.85, end: 41.24, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 24,
+    dur: 43,
+    title: "事故根本原因分析：致命控制邏輯漏洞",
+    audio_dur: 41.62,
+    clauses: [
+      { text: "經過事後嚴密調查，", start: 0.1, end: 2.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "發現了三個致命原因。", start: 2.0, end: 4.11, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第一個也是最根本的原因，", start: 4.06, end: 6.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "是控制邏輯存在嚴重缺失：", start: 6.31, end: 8.56, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50NC", start: 8.56, end: 9.31, speaker: "A", speaker_name: "主持人 A" },
+      { text: "不平衡電驛的輸出接點竟然只連接到中央警報系統，", start: 9.31, end: 13.61, speaker: "A", speaker_name: "主持人 A" },
+      { text: "卻沒有連鎖跳脫斷路器。", start: 13.61, end: 15.68, speaker: "A", speaker_name: "主持人 A" },
+      { text: "警報響起時現場無人介入，", start: 15.68, end: 18.19, speaker: "A", speaker_name: "主持人 A" },
+      { text: "高壓電持續灌入焦耳熱。", start: 18.19, end: 20.5, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第二個原因是熱失控空窗期，", start: 20.5, end: 23.21, speaker: "A", speaker_name: "主持人 A" },
+      { text: "15", start: 23.21, end: 23.62, speaker: "A", speaker_name: "主持人 A" },
+      { text: "分鐘高壓加熱讓絕緣油汽化膨脹引發物理爆炸。", start: 23.62, end: 28.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第三個原因是開關盤頂部貫穿孔未封堵防火泥，", start: 28.0, end: 32.92, speaker: "A", speaker_name: "主持人 A" },
+      { text: "導致大火順著纜線架瘋狂橫向蔓延。", start: 32.92, end: 36.66, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這個代價高昂的教訓，", start: 36.66, end: 38.78, speaker: "A", speaker_name: "主持人 A" },
+      { text: "促成了防護邏輯的徹底改進。", start: 38.78, end: 41.52, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 25,
+    dur: 33,
+    title: "防護升級：50NC 連鎖 CB 跳脫與 86 閉鎖",
+    audio_dur: 31.97,
+    clauses: [
+      { text: "針對控制邏輯漏洞，", start: 0.1, end: 2.09, speaker: "A", speaker_name: "主持人 A" },
+      { text: "廠區立刻實施了防護升級。", start: 2.09, end: 4.75, speaker: "A", speaker_name: "主持人 A" },
+      { text: "改善前，", start: 4.7, end: 5.52, speaker: "A", speaker_name: "主持人 A" },
+      { text: "單顆電容故障觸發", start: 5.52, end: 7.17, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50NC，", start: 7.17, end: 8.2, speaker: "A", speaker_name: "主持人 A" },
+      { text: "系統僅發出警報，", start: 8.2, end: 9.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "斷路器不動，", start: 9.84, end: 11.07, speaker: "A", speaker_name: "主持人 A" },
+      { text: "最終演變成爆炸火海，", start: 11.07, end: 13.13, speaker: "A", speaker_name: "主持人 A" },
+      { text: "這是失敗的邏輯。", start: 13.13, end: 14.78, speaker: "A", speaker_name: "主持人 A" },
+      { text: "改善後，", start: 14.78, end: 15.54, speaker: "A", speaker_name: "主持人 A" },
+      { text: "將", start: 15.54, end: 15.74, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50NC", start: 15.74, end: 16.5, speaker: "A", speaker_name: "主持人 A" },
+      { text: "接點直接導向跳脫迴路，", start: 16.5, end: 18.62, speaker: "A", speaker_name: "主持人 A" },
+      { text: "一旦", start: 18.62, end: 19.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "50NC", start: 19.0, end: 19.77, speaker: "A", speaker_name: "主持人 A" },
+      { text: "動作，", start: 19.77, end: 20.34, speaker: "A", speaker_name: "主持人 A" },
+      { text: "可以在", start: 20.34, end: 20.92, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.03", start: 20.92, end: 21.69, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒內立刻連鎖跳脫斷路器並觸發", start: 21.69, end: 24.38, speaker: "A", speaker_name: "主持人 A" },
+      { text: "86", start: 24.38, end: 24.76, speaker: "A", speaker_name: "主持人 A" },
+      { text: "閉鎖電驛，", start: 24.76, end: 25.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒級切斷高壓電源。", start: 25.72, end: 27.45, speaker: "A", speaker_name: "主持人 A" },
+      { text: "改寫了控制邏輯後，", start: 27.45, end: 29.27, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們能帶來怎樣的工程改變。", start: 29.27, end: 31.9, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 26,
+    dur: 36,
+    title: "消滅熱失控於萌芽階段的工程啟示",
+    audio_dur: 35.21,
+    clauses: [
+      { text: "這次改進帶來最核心的啟示，", start: 0.1, end: 2.9, speaker: "A", speaker_name: "主持人 A" },
+      { text: "就是將熱失控消滅於萌芽階段。", start: 2.9, end: 5.91, speaker: "A", speaker_name: "主持人 A" },
+      { text: "在改善後的邏輯下，", start: 5.86, end: 7.59, speaker: "A", speaker_name: "主持人 A" },
+      { text: "當凌晨", start: 7.59, end: 8.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "00:44", start: 8.16, end: 9.12, speaker: "A", speaker_name: "主持人 A" },
+      { text: "單顆電容器微小擊穿的瞬間，", start: 9.12, end: 11.61, speaker: "A", speaker_name: "主持人 A" },
+      { text: "系統只需", start: 11.61, end: 12.37, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.03", start: 12.37, end: 13.14, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒就能切離", start: 13.14, end: 14.1, speaker: "A", speaker_name: "主持人 A" },
+      { text: "12kV", start: 14.1, end: 14.86, speaker: "A", speaker_name: "主持人 A" },
+      { text: "高壓。", start: 14.86, end: 15.44, speaker: "A", speaker_name: "主持人 A" },
+      { text: "電容器完全沒有時間累積焦耳熱，", start: 15.44, end: 18.52, speaker: "A", speaker_name: "主持人 A" },
+      { text: "絕緣油無法汽化，", start: 18.52, end: 20.16, speaker: "A", speaker_name: "主持人 A" },
+      { text: "爆炸與火災的三要素被徹底切斷。", start: 20.16, end: 23.24, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們成功以數百元單顆電容損壞的小代價，", start: 23.24, end: 26.81, speaker: "A", speaker_name: "主持人 A" },
+      { text: "阻止了數千萬元大火與全廠停電的悲劇。", start: 26.81, end: 30.19, speaker: "A", speaker_name: "主持人 A" },
+      { text: "最後，", start: 30.19, end: 30.93, speaker: "A", speaker_name: "主持人 A" },
+      { text: "讓我們總結未來的電網安全維運策略。", start: 30.93, end: 35.15, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  },
+  {
+    i: 27,
+    dur: 42,
+    title: "結論與未來電網安全維護建議",
+    audio_dur: 40.66,
+    clauses: [
+      { text: "總結這次經驗，", start: 0.1, end: 1.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "我們提出四大電網維護策略。", start: 1.72, end: 4.72, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第一，", start: 4.67, end: 5.32, speaker: "A", speaker_name: "主持人 A" },
+      { text: "落實自動跳脫，", start: 5.32, end: 6.83, speaker: "A", speaker_name: "主持人 A" },
+      { text: "所有內部故障保護電驛必須強制連鎖跳脫，", start: 6.83, end: 10.94, speaker: "A", speaker_name: "主持人 A" },
+      { text: "嚴禁僅設警報。", start: 10.94, end: 12.45, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第二，", start: 12.45, end: 13.08, speaker: "A", speaker_name: "主持人 A" },
+      { text: "定期進行保護協調校核，", start: 13.08, end: 15.4, speaker: "A", speaker_name: "主持人 A" },
+      { text: "確保上下游具備", start: 15.4, end: 16.88, speaker: "A", speaker_name: "主持人 A" },
+      { text: "0.3", start: 16.88, end: 17.52, speaker: "A", speaker_name: "主持人 A" },
+      { text: "秒以上的", start: 17.52, end: 18.36, speaker: "A", speaker_name: "主持人 A" },
+      { text: "CTI", start: 18.36, end: 18.99, speaker: "A", speaker_name: "主持人 A" },
+      { text: "時間差。", start: 18.99, end: 19.84, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第三，", start: 19.84, end: 20.47, speaker: "A", speaker_name: "主持人 A" },
+      { text: "實施嚴密的實體防火封堵，", start: 20.47, end: 23.0, speaker: "A", speaker_name: "主持人 A" },
+      { text: "所有盤體貫穿孔與纜線架必須施作防火泥阻燃。", start: 23.0, end: 27.44, speaker: "A", speaker_name: "主持人 A" },
+      { text: "第四，", start: 27.44, end: 28.11, speaker: "A", speaker_name: "主持人 A" },
+      { text: "加速推動微電腦智慧", start: 28.11, end: 30.13, speaker: "A", speaker_name: "主持人 A" },
+      { text: "IED", start: 30.13, end: 30.81, speaker: "A", speaker_name: "主持人 A" },
+      { text: "與", start: 30.81, end: 31.03, speaker: "A", speaker_name: "主持人 A" },
+      { text: "IEC", start: 31.03, end: 31.71, speaker: "A", speaker_name: "主持人 A" },
+      { text: "61850", start: 31.71, end: 32.83, speaker: "A", speaker_name: "主持人 A" },
+      { text: "數位化轉型，", start: 32.83, end: 34.18, speaker: "A", speaker_name: "主持人 A" },
+      { text: "打造具備自癒能力的智慧電網。", start: 34.18, end: 37.33, speaker: "A", speaker_name: "主持人 A" },
+      { text: "以上是今天的簡報，", start: 37.33, end: 39.42, speaker: "A", speaker_name: "主持人 A" },
+      { text: "謝謝大家。", start: 39.42, end: 40.59, speaker: "A", speaker_name: "主持人 A" }
+    ]
+  }
+];
+const DUAL_CONFIG = {"mode": "single", "speaker_a": {"name": "主持人 A", "color": "#40a9ff", "voice": "zh-TW-YunJheNeural", "rate": "0%", "pitch": "-5Hz"}, "speaker_b": {"name": "專家 B", "color": "#fadb14", "voice": "zh-TW-HsiaoChenNeural", "rate": "+5%", "pitch": "-2Hz"}, "voice": "zh-CN-YunxiNeural", "rate": "0%", "pitch": "+2Hz", "pad_time": 0.5};
+const EMBED_SUBTITLES = true;
+
+const TOTAL_DUR = PAGES.reduce((sum, p) => sum + p.dur, 0);
+const stage = document.getElementById('stage');
+
+// 動態生成 Slide HTML
+PAGES.forEach(p => {
+  const slideEl = document.createElement('div');
+  slideEl.className = 'slide';
+  slideEl.dataset.page = p.i;
+  slideEl.style.setProperty('--dur', p.dur + 's');
+  slideEl.innerHTML = `
+    <div class="img" style="background-image:url('assets/images/page-${String(p.i).padStart(2, '0')}.png')"></div>
+    <div class="vignette"></div>
+    <div class="chapter"><span class="num">${String(p.i).padStart(2, '0')}</span> / ${PAGES.length} — ${p.title}</div>
+    <div class="version-badge"><span class="version-dot"></span><span class="version-text">SLIDE EDITION v2.4.0 (2026/07/25)</span></div>
+  `;
+  stage.appendChild(slideEl);
+});
+
+// 建立共用字幕條
+const subtitleEl = document.createElement('div');
+subtitleEl.className = 'subtitle';
+subtitleEl.id = 'subtitle';
+stage.appendChild(subtitleEl);
+
+const slideEls = [...document.querySelectorAll('.slide')];
+const audio = document.getElementById('audio');
+const progress = document.getElementById('progress');
+const startScreen = document.getElementById('startScreen');
+const sub = document.getElementById('subtitle');
+const dialogueStage = document.getElementById('dialogueStage');
+const speakerCardA = document.getElementById('speakerCardA');
+const speakerCardB = document.getElementById('speakerCardB');
+
+let currentSlide = 0;
+let totalElapsed = 0;
+let slideStartTime = 0;
+let rafId = null;
+
+const urlParams = new URLSearchParams(window.location.search);
+const isRenderMode = urlParams.get('render') === 'true';
+
+function showSlide(i) {
+  slideEls.forEach((el, idx) => el.classList.toggle('active', idx === i));
+  const p = PAGES[i];
+  
+  sub.innerHTML = "";
+  sub.classList.remove('show');
+  if (speakerCardA && speakerCardB) {
+    speakerCardA.classList.remove('speaking');
+    speakerCardB.classList.remove('speaking');
+  }
+
+  if (!isRenderMode) {
+    audio.src = `assets/narration/page-${String(p.i).padStart(2, '0')}.mp3`;
+    audio.play().catch(()=>{});
+  }
+
+  slideStartTime = performance.now();
+}
+
+function tick() {
+  const now = performance.now();
+  const elapsed = (now - slideStartTime) / 1000;
+  const p = PAGES[currentSlide];
+  const slideDur = p.dur;
+
+  const totalProgress = (totalElapsed + elapsed) / TOTAL_DUR;
+  progress.style.width = (Math.min(totalProgress, 1) * 100) + '%';
+
+  const activeClause = p.clauses.find(c => elapsed >= c.start && elapsed < c.end);
+  if (activeClause) {
+    if (sub.dataset.text !== activeClause.text) {
+      sub.dataset.text = activeClause.text;
+      if (DUAL_CONFIG.mode === "dual" || (activeClause.speaker && activeClause.speaker !== 'A')) {
+        const isB = activeClause.speaker === "B";
+        const spkColor = isB ? (DUAL_CONFIG.speaker_b ? DUAL_CONFIG.speaker_b.color : '#fadb14') : (DUAL_CONFIG.speaker_a ? DUAL_CONFIG.speaker_a.color : '#40a9ff');
+        
+        sub.innerHTML = `<span style="color:${spkColor}; text-shadow: -1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 2px 8px rgba(0,0,0,0.9);">${activeClause.text}</span>`;
+      } else {
+        sub.innerHTML = activeClause.text;
+      }
+      sub.classList.add('show');
+    }
+  } else {
+    sub.innerHTML = "";
+    sub.classList.remove('show');
+    sub.dataset.text = "";
+    if (speakerCardA && speakerCardB) {
+      speakerCardA.classList.remove('speaking');
+      speakerCardB.classList.remove('speaking');
+    }
+  }
+
+  if (elapsed >= slideDur) {
+    totalElapsed += slideDur;
+    currentSlide++;
+    if (currentSlide >= PAGES.length) {
+      cancelAnimationFrame(rafId);
+      sub.classList.remove('show');
+      console.log('Playback complete');
+      return;
+    }
+    showSlide(currentSlide);
+  }
+  rafId = requestAnimationFrame(tick);
+}
+
+startScreen.addEventListener('click', () => {
+  startScreen.classList.add('hidden');
+  showSlide(0);
+  rafId = requestAnimationFrame(tick);
+});
+
+if (isRenderMode) {
+  if (!EMBED_SUBTITLES) {
+    document.body.classList.add('render-no-embed');
+  }
+  startScreen.classList.add('hidden');
+  showSlide(0);
+  rafId = requestAnimationFrame(tick);
+}
+</script>
+
+</body>
+</html>

@@ -98,8 +98,8 @@ npx playwright install chromium
 .
 ├── app.py                     # 後端 HTTP 伺服器 & API 邏輯 (TTS, PDF 轉圖, 設定儲存)
 ├── index.html                 # 現代化前端 Web GUI 編輯器
-├── render.py                  # 影片繪製與 FFmpeg 音視訊合成處理器
-├── record.cjs                 # Playwright 自動化視訊畫格錄製腳本
+├── render.py                  # 影片繪製與 FFmpeg 音視訊極速合成處理器
+├── snapshot_slides.cjs        # Playwright 高速投影片畫格擷取腳本
 ├── package.json               # Node.js 專案設定檔 (Playwright 依賴)
 ├── requirements.txt           # Python 依賴包 (PyMuPDF, edge-tts)
 ├── 啟動影片製作工坊.bat          # Windows 一鍵啟動批次檔

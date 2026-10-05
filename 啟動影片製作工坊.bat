@@ -1,26 +1,27 @@
-@echo off
-title �v���s�@�u�{ - �Ұʾ�
+﻿@echo off
+chcp 65001 > nul
+title 影片製作工坊 - 啟動器
 
 echo ===================================================
-echo   �v���s�@�u�{ (Traditional Chinese GUI)
+echo   影片製作工坊 (Traditional Chinese GUI)
 echo ===================================================
 echo.
-echo ���b�Ұʫ�ݪA��...
+echo 正在啟動後端服務...
 echo.
 
-:: �]�w Python �� UTF-8 �Ҧ��H�קK�s�X���D
+:: 設定 Python 的 UTF-8 模式以避免編碼問題
 set PYTHONUTF8=1
 
-:: ������妸�ɩҦb���ؿ�
-cd /d "%~dp0"
+:: 切換到核心程式所在的目錄
+cd /d "%~dp0core"
 
-:: �b�w�]�s�������}�Һ���
-echo ���b�۰ʶ}���s����: http://localhost:8000/ ...
+:: 在預設瀏覽器中開啟網頁
+echo 正在自動開啟瀏覽器: http://localhost:8000/ ...
 start http://localhost:8000/
 
-:: ���� Python ��ݪA��
+:: 執行 Python 後端服務
 python app.py
 
 echo.
-echo �A�Ȥw�����C
+echo 服務已關閉。
 pause
