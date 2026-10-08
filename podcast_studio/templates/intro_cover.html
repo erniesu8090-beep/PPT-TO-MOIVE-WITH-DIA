@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>Podcast Episode Intro Cover</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1920px;
+    height: 1080px;
+    background: radial-gradient(circle at 25% 35%, rgba(6, 182, 212, 0.22) 0%, transparent 45%),
+                radial-gradient(circle at 75% 65%, rgba(139, 92, 246, 0.24) 0%, transparent 50%),
+                #070a13;
+    font-family: 'Microsoft JhengHei', sans-serif;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .grid-bg {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background-image: linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+    background-size: 64px 64px;
+    mask-image: radial-gradient(circle at 50% 50%, black 35%, transparent 80%);
+  }
+  .card-wrap {
+    width: 1560px;
+    height: 860px;
+    background: rgba(15, 23, 42, 0.72);
+    backdrop-filter: blur(24px);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 36px;
+    padding: 64px 84px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.75), 0 0 60px rgba(6, 182, 212, 0.12);
+    position: relative;
+    z-index: 2;
+  }
+  .badge-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .badge {
+    background: linear-gradient(135deg, #0284c7, #2563eb);
+    padding: 8px 24px;
+    border-radius: 100px;
+    font-size: 19px;
+    font-weight: 800;
+    letter-spacing: 1.5px;
+    color: #fff;
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.4);
+  }
+  .badge-sub {
+    font-size: 18px;
+    color: #94a3b8;
+    letter-spacing: 1px;
+  }
+  .title-block {
+    margin-top: 24px;
+  }
+  h1 {
+    font-size: 76px;
+    font-weight: 900;
+    line-height: 1.15;
+    letter-spacing: 2px;
+    background: linear-gradient(120deg, #ffffff 30%, #38bdf8 70%, #818cf8 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .sub-title {
+    font-size: 30px;
+    color: #cbd5e1;
+    margin-top: 18px;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+  .highlights-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+    margin-top: 16px;
+  }
+  .highlight-card {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    padding: 24px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .highlight-title {
+    font-size: 21px;
+    font-weight: 700;
+    color: #38bdf8;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .highlight-desc {
+    font-size: 16px;
+    color: #94a3b8;
+    line-height: 1.55;
+  }
+  .footer-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding-top: 24px;
+  }
+  .cast-info {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    font-size: 20px;
+    color: #e2e8f0;
+    font-weight: 600;
+  }
+  .speaker-dot {
+    width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 8px;
+  }
+</style>
+</head>
+<body>
+  <div class="grid-bg"></div>
+  <div class="card-wrap">
+    <div>
+      <div class="badge-row">
+        <div class="badge">🎙️ PODCAST 漫談精選</div>
+        <div class="badge-sub">全篇 21 分鐘雙人深度解析 · 繁體中文全字幕</div>
+      </div>
+      <div class="title-block">
+        <h1 id="cover-title">擺脫罪惡感的平靜生產力</h1>
+        <div class="sub-title" id="cover-subtitle">情緒過勞與大腦修復指南：停止無效內耗，找回身心平靜節奏</div>
+      </div>
+    </div>
+
+    <div class="highlights-row">
+      <div class="highlight-card">
+        <div class="highlight-title"><span>☕</span> 破解休息罪惡感</div>
+        <div class="highlight-desc">看清週末午後躺在沙發上的莫名焦慮，停下大腦背景程式瘋狂尖叫的批判聲音。</div>
+      </div>
+      <div class="highlight-card">
+        <div class="highlight-title"><span>🪙</span> 每日認知籌碼法則</div>
+        <div class="highlight-desc">理性認識大腦能量生理極限，將有限的精力投資在真正重要的一件核心大事。</div>
+      </div>
+      <div class="highlight-card">
+        <div class="highlight-title"><span>🧱</span> 具象化成就積木</div>
+        <div class="highlight-desc">只要有輸出就是勝出，建立健康的課題防護牆，找回屬於自己的掌控感與平靜。</div>
+      </div>
+    </div>
+
+    <div class="footer-row">
+      <div class="cast-info">
+        <span><span class="speaker-dot" style="background:#FFFF00; box-shadow:0 0 8px #FFFF00;"></span>主持人 Alan</span>
+        <span><span class="speaker-dot" style="background:#40A9FF; box-shadow:0 0 8px #40A9FF;"></span>嘉賓 Beth</span>
+      </div>
+      <div style="color:#64748b; font-size:17px; font-weight:500;">Google NotebookLM 雙人漫談系列</div>
+    </div>
+  </div>
+</body>
+</html>
