@@ -88,7 +88,16 @@ npx playwright install chromium
 | **角色 A** | `A:`, `A：`, `[A]`, `主持人:`, `Host:`, `角色A:` | 主講人 / 主持人 |
 | **角色 B** | `B:`, `B：`, `[B]`, `專家:`, `Guest:`, `角色B:` | 對談者 / 專家來賓 |
 
-詳情請參閱 [雙人對話腳本格式指南.md](file:///c:/Users/ernie/Documents/%E5%BD%B1%E7%89%87%E8%A3%BD%E4%BD%9C%E5%B7%A5%E5%9D%8A_%E7%B2%BE%E7%B0%A1%E7%89%88/%E9%9B%99%E4%BA%BA%E5%B0%8D%E8%A9%B1%E8%85%B3%E6%9C%AC%E6%A0%BC%E5%BC%8F%E6%8C%87%E5%8D%97.md)。
+詳情請參閱 [雙人對話腳本格式指南.md](雙人對話腳本格式指南.md)。
+
+---
+
+## 🎙️ NotebookLM / 雙人 Podcast 轉虛擬錄音室影片
+
+本專案亦支援將 Google NotebookLM 或 Gemini 生成的雙人 Podcast 音訊檔，全自動轉換為包含**「兩側主持人偶向內注視 + 中央動態概念插圖 + 高對比雙色字幕」**的高清節目影片！
+
+詳情請參閱 [雙人Podcast虛擬錄音室影片製作指南.md](雙人Podcast虛擬錄音室影片製作指南.md)。
+
 
 ---
 

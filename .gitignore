@@ -1,4 +1,4 @@
-﻿# Byte-compiled / optimized / DLL files
+# Byte-compiled / optimized / DLL files
 __pycache__/
 core/__pycache__/
 *.py[cod]
@@ -21,6 +21,10 @@ assets/images/
 core/assets/images/
 assets/temp_slides.pdf
 core/assets/temp_slides.pdf
+podcast_studio/projects/
+gemini_studio/
+*.m4a
+
 
 # Environment & Temp files
 .env

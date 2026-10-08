@@ -1,6 +1,6 @@
 {
   "mode": "single",
-  "voice": "zh-CN-YunxiNeural",
+  "voice": "zh-TW-HsiaoChenNeural",
   "rate": "0%",
   "pitch": "+2Hz",
   "pad_time": 0.5,
