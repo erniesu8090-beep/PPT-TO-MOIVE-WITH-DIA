@@ -53,7 +53,8 @@ def analyze_chapters(audio_path: Path, proj_dir: Path):
 要求：
 1. 每個章節約 1.5 ~ 2.5 分鐘，覆蓋完整音訊。
 2. 提煉出每個章節中最核心生動的隱喻、故事或心理情境。
-3. 為每個章節設計 3D Pixar / Editorial 概念插畫英文提示詞 (image_prompt) 與中文標籤 (caption)。
+3. 中文標籤 (caption) 與主題 (topic) 必須為「純繁體中文」，嚴格禁止出現任何英文單字或英文字詞括號（例如嚴禁出現 (Sunday Guilt) 或 (The Checklist Trap) 等英文）。
+4. 概念插畫提示詞 (image_prompt)：若畫面中包含任何看板、文字、字牌、圖表或標籤，必須明確指定為 Traditional Chinese text only (純繁體中文，禁止英文或簡體)；或設計為無文字純視覺隱喻畫面。
 請以純 JSON 格式輸出：
 {
   "podcast_title": "節目名稱",
@@ -64,10 +65,10 @@ def analyze_chapters(audio_path: Path, proj_dir: Path):
       "start_sec": 0.0,
       "end_sec": 120.0,
       "time_range": "00:00 - 02:00",
-      "topic": "主題簡述",
-      "caption": "概念可視化：...",
-      "key_insight": "核心觀點",
-      "image_prompt": "Editorial 3D Pixar concept illustration..."
+      "topic": "主題簡述 (純繁體中文)",
+      "caption": "概念可視化：...(純繁體中文，無英文括號)",
+      "key_insight": "核心觀點 (純繁體中文)",
+      "image_prompt": "Editorial 3D Pixar concept illustration, no English text..."
     }
   ]
 }

@@ -3573,7 +3573,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
             const consoleEl = document.getElementById('podcastLogConsole');
             const statusEl = document.getElementById('podcastLogStatus');
-            consoleEl.textContent = `[${new Date().toLocaleTimeString()}] 開始執行 Podcast 製作管線 (步驟: ${step})...\n`;
+            consoleEl.textContent = `[${new Date().toLocaleTimeString()}] 開始執行 Podcast 製作管線 (步驟: ${step})...\\n`;
             statusEl.textContent = "執行中...";
             statusEl.style.color = "#06b6d4";
 
@@ -3584,7 +3584,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 try {
                     const data = JSON.parse(event.data);
                     if (data.log) {
-                        consoleEl.textContent += data.log + "\n";
+                        consoleEl.textContent += data.log + "\\n";
                         consoleEl.scrollTop = consoleEl.scrollHeight;
                     }
                     if (data.complete) {
@@ -3598,7 +3598,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         loadPodcastInfo();
                     }
                 } catch (e) {
-                    consoleEl.textContent += event.data + "\n";
+                    consoleEl.textContent += event.data + "\\n";
                 }
             };
 
