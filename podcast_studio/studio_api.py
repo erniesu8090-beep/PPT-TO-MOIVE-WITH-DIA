@@ -59,14 +59,30 @@ def save_gemini_key(new_key: str):
 
 def scan_audio_files():
     audios = []
-    # Scan root dir
-    for ext in ["*.m4a", "*.mp3", "*.wav", "*.aac"]:
-        for f in ROOT_DIR.glob(ext):
-            audios.append({
-                "name": f.name,
-                "path": str(f.resolve()),
-                "size_mb": round(f.stat().st_size / (1024 * 1024), 1)
-            })
+    seen = set()
+    scan_dirs = [
+        ROOT_DIR / "sound_source",
+        ROOT_DIR / "sound source",
+        ROOT_DIR
+    ]
+    for d in scan_dirs:
+        if not d.exists() or not d.is_dir():
+            continue
+        for ext in ["*.m4a", "*.mp3", "*.wav", "*.aac"]:
+            for f in sorted(d.glob(ext)):
+                if f.name not in seen:
+                    seen.add(f.name)
+                    # If inside sound_source or sound source, display with folder prefix
+                    try:
+                        rel = f.relative_to(ROOT_DIR)
+                        display_name = str(rel).replace("\\", "/")
+                    except ValueError:
+                        display_name = f.name
+                    audios.append({
+                        "name": display_name,
+                        "path": str(f.resolve()),
+                        "size_mb": round(f.stat().st_size / (1024 * 1024), 1)
+                    })
     return audios
 
 def scan_projects():
@@ -269,8 +285,10 @@ def handle_podcast_get(handler, path: str, parsed_url):
 
         audio_path = Path(audio_input)
         if not audio_path.exists():
-            # Check in ROOT_DIR
-            audio_path = ROOT_DIR / audio_input
+            for cand in [ROOT_DIR / audio_input, ROOT_DIR / "sound_source" / audio_input, ROOT_DIR / "sound source" / audio_input]:
+                if cand.exists():
+                    audio_path = cand
+                    break
 
         if not audio_path.exists():
             log_sse(f"❌ 錯誤：找不到音訊檔案：{audio_input}")
@@ -388,6 +406,10 @@ def handle_podcast_post(handler, path: str, payload: dict):
         proj_name = payload.get("project", "")
         if target == "movie_output":
             p = MOVIE_OUTPUT_DIR
+        elif target == "sound_source":
+            p = ROOT_DIR / "sound_source"
+            if not p.exists():
+                p = ROOT_DIR / "sound source"
         elif target == "project" and proj_name:
             p = PROJECTS_DIR / proj_name
         else:

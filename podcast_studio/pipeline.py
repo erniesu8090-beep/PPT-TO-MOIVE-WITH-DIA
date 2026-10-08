@@ -245,9 +245,15 @@ def main():
     parser.add_argument("--step", choices=["all", "analyze", "subtitles", "scenes", "render"], default="all", help="執行特定步驟 (預設為 all)")
     args = parser.parse_args()
 
-    audio_path = Path(args.audio).resolve()
+    audio_path = Path(args.audio)
     if not audio_path.exists():
-        print(f"❌ 找不到指定的音訊檔案：{audio_path}")
+        for cand in [ROOT_DIR / "sound_source" / args.audio, ROOT_DIR / "sound source" / args.audio, ROOT_DIR / args.audio]:
+            if cand.exists():
+                audio_path = cand
+                break
+    audio_path = audio_path.resolve()
+    if not audio_path.exists():
+        print(f"❌ 找不到指定的音訊檔案：{args.audio}")
         sys.exit(1)
 
     episode_name = audio_path.stem

@@ -2436,7 +2436,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
 
                 <div class="form-group" style="margin-bottom: 12px;">
-                    <label for="podcastAudioSelect">輸入 Podcast 音訊 (.m4a / .mp3)：</label>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <label for="podcastAudioSelect" style="margin-bottom: 0;">輸入 Podcast 音訊 (.m4a / .mp3)：</label>
+                        <button type="button" class="chapter-btn" onclick="openPodcastFolder('sound_source')" style="font-size: 11px; padding: 2px 8px;" title="在檔案總管開啟音檔資料夾">📂 開啟音檔資料夾</button>
+                    </div>
                     <select id="podcastAudioSelect">
                         <option value="">偵測音訊檔案中...</option>
                     </select>

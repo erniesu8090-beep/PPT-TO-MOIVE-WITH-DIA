@@ -24,6 +24,13 @@ core/assets/temp_slides.pdf
 podcast_studio/projects/
 gemini_studio/
 *.m4a
+*.mp3
+*.wav
+*.aac
+sound_source/*
+!sound_source/.gitkeep
+"sound source/*"
+!"sound source/.gitkeep"
 
 
 # Environment & Temp files

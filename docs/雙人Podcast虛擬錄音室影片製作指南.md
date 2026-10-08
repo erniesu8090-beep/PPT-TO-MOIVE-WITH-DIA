@@ -63,10 +63,12 @@ flowchart TD
 整個 Podcast 虛擬錄音室模組獨立收整在 `podcast_studio/` 目錄中，保持根目錄純淨整齊：
 
 ```text
+sound_source/               # 音訊專屬存放資料夾 (乾淨集中存放 .m4a / .mp3 / .wav)
 podcast_studio/
 ├── pipeline.py             # 一鍵端到端全流程主程式 (整合分析/字幕/截圖/壓制)
 ├── templates/
-│   └── studio_stage.html   # 1080p 舞台模板 (支援向內注視人偶與中央大螢幕)
+│   ├── studio_stage.html   # 1080p 舞台模板 (支援向內注視人偶與中央大螢幕)
+│   └── intro_cover.html    # 開場導讀封面模板 (避免開場提前破題)
 ├── default_assets/         # 預設通用素材 (主持人 Alan、嘉賓 Beth、錄音室背景)
 │   ├── host_alan.jpg
 │   ├── guest_beth.jpg
