@@ -40,20 +40,15 @@
 
 ## 🛠️ 端到端自動化工作流 (End-to-End Pipeline)
 
-整個流水線分為以下 5 大處理階段：
+音檔分析與概念圖規劃目前由 AI Agent 或人工事先完成；`pipeline.py` 負責讀取已準備好的章節和字幕、擷取舞台畫格，再合成影片。程式提供以下可執行步驟：
 
 ```mermaid
 flowchart TD
-    A["1. 原始音訊輸入<br>(NotebookLM .m4a / .mp3)"] --> B["2. Gemini 多模態語音解析<br>(語音轉逐字稿 & 角色分離)"]
-    B --> C["3. 核心概念切分與提示詞生成<br>(full_podcast_chapters.json)"]
-    B --> D["3b. 全文 SRT 字幕生成<br>(full_podcast_subtitles.srt)"]
-    C --> E["4. 概念插圖繪製<br>(16:9 3D Pixar Concept Illustrations)"]
-    E --> F["5. Playwright 1080p 舞台畫格擷取<br>(scene_01.png ~ scene_11.png)"]
-    D --> G["6. ASS 雙色高對比字幕轉換<br>(Alan 黃字 / Beth 藍字)"]
-    F --> H["7. FFmpeg 視訊串接與封裝壓制"]
-    G --> H
-    A --> H
-    H --> I["🎬 最終 1080p 雙人錄音室影音成品"]
+    A["Podcast 音訊 + 事先準備的 chapters.json、subtitles.srt、概念圖"] --> B["1. SRT 轉雙色 ASS 字幕"]
+    A --> C["2. Playwright 擷取 1080p 舞台畫格"]
+    B --> D["3. FFmpeg 串接畫格、音訊與字幕"]
+    C --> D
+    D --> E["🎬 最終 1080p 雙人錄音室影音成品"]
 ```
 
 ---
@@ -65,34 +60,28 @@ flowchart TD
 ```text
 sound_source/               # 音訊專屬存放資料夾 (乾淨集中存放 .m4a / .mp3 / .wav)
 podcast_studio/
-├── pipeline.py             # 一鍵端到端全流程主程式 (整合分析/字幕/截圖/壓制)
+├── pipeline.py             # 字幕轉換、舞台截圖與影片合成
 ├── templates/
 │   ├── studio_stage.html   # 1080p 舞台模板 (支援向內注視人偶與中央大螢幕)
-│   └── intro_cover.html    # 開場導讀封面模板 (避免開場提前破題)
 ├── default_assets/         # 預設通用素材 (主持人 Alan、嘉賓 Beth、錄音室背景)
 │   ├── host_alan.jpg
 │   ├── guest_beth.jpg
 │   └── studio_bg.jpg
 └── projects/               # 各集專屬資料夾 (依音訊檔名自動隔離建檔)
     └── <Podcast名稱>/
-        ├── chapters.json   # 該集 11 大章節時間軸與生圖提示詞
-        ├── subtitles.srt   # 該集 238 條雙人對話逐字稿字幕
+        ├── chapters.json   # 該集章節時間軸、主題與說明
+        ├── subtitles.srt   # 該集雙人對話字幕
         ├── subtitles.ass   # 該集高對比雙色 ASS 字幕
-        ├── concepts/       # 該集 11 張概念插圖
-        └── scenes/         # 該集 11 個 1080p 舞台畫格
+        ├── concepts/       # 該集概念插圖
+        └── scenes/         # 該集 1080p 舞台畫格
 ```
 
 ## 🤖 AI Agent 協作工作流 (Recommended Workflow)
 
 本模組最佳工作模式為**直接由 AI Agent 協同全自動製作**，省去多餘的網頁操作：
 
-1. **放置音訊檔**：將欲製作的音訊檔直接放入 `sound_source/`（例如 `sound_source/擺脫罪惡感的平靜生產力.m4a`）。
-2. **對話委託 AI Agent**：
-   - 「*幫我把 sound_source 裡的音檔製作成雙人 Podcast 影片*」
-3. **AI Agent 極簡 3 步高速產出**：
-   - 深度分析音檔並切分章節（提煉核心繁體中文主題與字幕）。
-   - 量身繪製專屬電影級 3D 概念插圖（純視覺高審美，無字卡）。
-   - 虛擬舞台畫格合成與雙色高對比字幕壓制，一鍵輸出 1080p MP4。
+1. **準備素材**：將音訊放入 `sound_source/`，並在 `podcast_studio/projects/<音訊檔名>/` 準備 `chapters.json`、`subtitles.srt` 和 `concepts/` 概念圖。分析、逐字稿和概念圖需事先由 AI Agent 或人工完成。
+2. **執行合成**：呼叫下方 CLI 命令；程式會擷取舞台畫格、產生雙色字幕並輸出 1080p MP4。
 
 ---
 
@@ -107,10 +96,7 @@ python podcast_studio/pipeline.py "擺脫罪惡感的平靜生產力.m4a"
 
 ### 亦支援分步調適執行（可選）：
 ```bash
-# 只進行語意分析與概念章節提煉：
-python podcast_studio/pipeline.py "擺脫罪惡感的平靜生產力.m4a" --step analyze
-
-# 只生成雙人逐字稿與雙色字幕：
+# 只將已準備的 SRT 轉成雙色字幕：
 python podcast_studio/pipeline.py "擺脫罪惡感的平靜生產力.m4a" --step subtitles
 
 # 重新以 Playwright 截取 1080p 舞台畫格：
@@ -132,8 +118,13 @@ python podcast_studio/pipeline.py "擺脫罪惡感的平靜生產力.m4a" --step
    * **嘉賓 B (Beth)**：採用**淺天藍/水藍色 (`#40A9FF`)**，對比鮮明。
    * **嚴格禁止**：深藍色、深紅色、墨綠色、深紫色或刺眼高飽和螢光色。
    * **輔助樣式**：必須保留黑色細描邊（`outline: 3.5`）與適度陰影（`shadow: 2`）。
-2. **章節切換節奏**：
+2. **字幕排版與中央安全區防截斷規範**：
+   * **單行字數嚴格上限**：每行字幕**不得超過 18 個中文字**，超過必須主動插入 `\N` 強制折行，最多 2 行。
+   * **保留中央安全區**：左右兩側設定至少 `420px` 邊距，確保文字嚴格置中於左右主持人卡片之間的 1,160px 安全通道，**嚴禁橫向溢出螢幕導致開頭與結尾文字被截斷**。
+   * **長段落依標點切分**：單一語音/字幕段落超過 24～26 字或時間超過 5 秒時，自動依標點符號（`。`、`！`、`？`、`，`、`；`）拆分為自然短句並等比分配時間碼。
+   * **發言者標籤節奏**：長段落切分後，發言者標籤僅保留於首句，後續短句維持純內容。
+3. **章節切換節奏**：
    * 每個視覺章節建議維持在 **90 ~ 150 秒**（1.5 ~ 2.5 分鐘），避免畫面停留過久產生視覺疲勞，也不宜切換過頻導致分散注意力。
-3. **主持人視線方向**：
+4. **主持人視線方向**：
    * 左側人偶視線與身體微傾朝向右方（中央）。
    * 右側人偶視線與身體微傾朝向左方（中央）。
