@@ -32,14 +32,62 @@ def load_chapters(proj_dir: Path):
     print(f"  ✓ 成功載入章節資料：{chapters_json.name}")
     return json.loads(chapters_json.read_text(encoding="utf-8"))
 
+def parse_srt_time(t_str: str) -> float:
+    m = re.match(r"(\d+):(\d+):(\d+)[,\.](\d+)", t_str)
+    if not m: return 0.0
+    h, m_, s, ms = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)[:3].ljust(3, "0"))
+    return h * 3600 + m_ * 60 + s + ms / 1000.0
+
+def format_ass_time(sec: float) -> str:
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = int(sec % 60)
+    cs = int(round((sec - int(sec)) * 100))
+    if cs >= 100: cs = 99
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+def wrap_ass_lines(text: str, max_chars: int = 18) -> str:
+    """智慧折行：每行字數不超過 max_chars，避免橫向超出中央安全區或被主持人卡片遮擋"""
+    if len(text) <= max_chars:
+        return text
+    lines = []
+    rem = text
+    while len(rem) > max_chars:
+        best = -1
+        for i in range(min(max_chars, len(rem)) - 1, 6, -1):
+            if rem[i] in "，、；。？！ ,:：":
+                best = i + 1
+                break
+        if best == -1:
+            best = max_chars
+        lines.append(rem[:best].strip())
+        rem = rem[best:].strip()
+    if rem:
+        lines.append(rem)
+    return r"\N".join(lines)
+
+def split_srt_by_punctuation(text: str, target_len: int = 24) -> list:
+    """依標點符號切分超長語音段落為自然短句，避免單條字幕時長或字數過長導致螢幕溢出截斷"""
+    tokens = [t for t in re.split(r"([。！？!?；;，,、\n])", text) if t]
+    chunks = []
+    curr = ""
+    for i in range(0, len(tokens), 2):
+        t = tokens[i]
+        p = tokens[i+1] if i+1 < len(tokens) else ""
+        phrase = t + p
+        if not phrase.strip(): continue
+        if len(curr) + len(phrase) <= target_len:
+            curr += phrase
+        else:
+            if curr: chunks.append(curr)
+            curr = phrase
+    if curr: chunks.append(curr)
+    return chunks
+
 def prepare_subtitles(proj_dir: Path):
-    """讀取 SRT 字幕並轉換為高對比雙色 ASS 字幕 (Alan 明黃色 #FFFF00 / Beth 水藍色 #40A9FF)"""
+    """讀取 SRT 字幕並轉換為高對比雙色 ASS 字幕 (Alan 明黃色 #FFFF00 / Beth 水藍色 #40A9FF)，具備自動長句切分與智慧折行"""
     ass_file = proj_dir / "subtitles.ass"
     srt_file = proj_dir / "subtitles.srt"
-
-    if ass_file.exists():
-        print(f"  ✓ 已存在雙色 ASS 字幕：{ass_file.name}")
-        return
 
     if not srt_file.exists():
         raise FileNotFoundError(f"找不到字幕檔案：{srt_file}，請先由 AI Agent 或手動建立 subtitles.srt。")
@@ -50,7 +98,7 @@ def prepare_subtitles(proj_dir: Path):
     ass_header = """[Script Info]
 Title: Podcast Studio Subtitles
 ScriptType: v4.00+
-WrapStyle: 0
+WrapStyle: 2
 ScaledBorderAndShadow: yes
 YCbCr Matrix: None
 PlayResX: 1920
@@ -58,8 +106,8 @@ PlayResY: 1080
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: HostA,Microsoft JhengHei,44,&H0000FFFF,&H000000FF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,3.5,2,2,420,420,45,1
-Style: HostB,Microsoft JhengHei,44,&H00FFA940,&H000000FF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,3.5,2,2,420,420,45,1
+Style: HostA,Microsoft JhengHei,42,&H0000FFFF,&H000000FF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,3.5,2,2,420,420,45,1
+Style: HostB,Microsoft JhengHei,42,&H00FFA940,&H000000FF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,3.5,2,2,420,420,45,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -68,16 +116,42 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for b in blocks:
         lines = [l.strip() for l in b.strip().split("\n") if l.strip()]
         if len(lines) < 3: continue
-        m = re.match(r"(\d+:\d+:\d+)[,\.](\d+)\s*-->\s*(\d+:\d+:\d+)[,\.](\d+)", lines[1])
+        m = re.match(r"(\d+:\d+:\d+[,\.]\d+)\s*-->\s*(\d+:\d+:\d+[,\.]\d+)", lines[1])
         if not m: continue
-        start_time = f"{int(m.group(1).split(':')[0])}:{m.group(1).split(':')[1]}:{m.group(1).split(':')[2]}.{m.group(2)[:2]}"
-        end_time = f"{int(m.group(3).split(':')[0])}:{m.group(3).split(':')[1]}:{m.group(3).split(':')[2]}.{m.group(4)[:2]}"
-        text = " ".join(lines[2:])
-        style = "HostB" if ("Beth" in text or "嘉賓" in text or "來賓" in text or "B:" in text) else "HostA"
-        dialogues.append(f"Dialogue: 0,{start_time},{end_time},{style},,0,0,0,,{text}")
+
+        start_sec = parse_srt_time(m.group(1))
+        end_sec = parse_srt_time(m.group(2))
+        dur = max(0.5, end_sec - start_sec)
+
+        raw_text = " ".join(lines[2:])
+        spk_m = re.match(r"^(Alan\s*\([^)]+\)[:：]|Beth\s*\([^)]+\)[:：]|主持人[:：]|嘉賓[:：]|來賓[:：]|A[:：]|B[:：])\s*(.*)$", raw_text)
+        if spk_m:
+            spk_tag = spk_m.group(1).strip()
+            body = spk_m.group(2).strip()
+        else:
+            spk_tag = ""
+            body = raw_text.strip()
+
+        style = "HostB" if ("Beth" in raw_text or "嘉賓" in raw_text or "來賓" in raw_text or "B:" in raw_text) else "HostA"
+
+        chunks = split_srt_by_punctuation(body, target_len=26)
+        if not chunks: chunks = [body]
+
+        total_len = sum(len(c) for c in chunks) or 1
+        curr_t = start_sec
+        for idx, chunk in enumerate(chunks):
+            c_dur = dur * (len(chunk) / total_len)
+            s_time = curr_t
+            e_time = curr_t + c_dur if idx < len(chunks) - 1 else end_sec
+            curr_t = e_time
+
+            # 發言者標籤加在該段首句，後續短句顯示純內容，使畫面整潔
+            full_text = f"{spk_tag} {chunk}" if (spk_tag and idx == 0) else chunk
+            wrapped = wrap_ass_lines(full_text, max_chars=18)
+            dialogues.append(f"Dialogue: 0,{format_ass_time(s_time)},{format_ass_time(e_time)},{style},,0,0,0,,{wrapped}")
 
     ass_file.write_text(ass_header + "\n".join(dialogues) + "\n", encoding="utf-8")
-    print(f"  ✓ 成功轉換為高對比雙色 ASS 字幕：{ass_file.name}")
+    print(f"  ✓ 成功轉換為高對比雙色 ASS 字幕（含長句防截斷處理）：{ass_file.name}")
 
 async def render_scenes_async(proj_dir: Path):
     """使用 Playwright 載入 HTML 舞台，高速截取所有章節 1080p 畫格"""
@@ -106,20 +180,32 @@ async def render_scenes_async(proj_dir: Path):
             caption = ch["caption"]
 
             await page.goto(stage_html)
-            concept_img = concepts_dir / f"concept_{idx:02d}.jpg"
+            concept_img = concepts_dir / f"concept_{idx:02d}.png"
             if not concept_img.exists():
-                concept_img = concepts_dir / "concept_01.jpg"
+                concept_img = concepts_dir / f"concept_{idx:02d}.jpg"
+            if not concept_img.exists():
+                concept_img = concepts_dir / "concept_01.png"
+                if not concept_img.exists():
+                    concept_img = concepts_dir / "concept_01.jpg"
 
             img_uri = concept_img.as_uri()
 
-            await page.evaluate(f"""() => {{
+            await page.evaluate("""({podcastTitle, imageUri, topic, caption}) => {
                 const titleEl = document.getElementById('podcast-title');
-                if (titleEl) titleEl.textContent = '{podcast_title}';
-                document.getElementById('concept-display').src = '{img_uri}';
-                document.getElementById('topic-text').textContent = '{topic}';
-                document.getElementById('concept-caption').textContent = '{caption}';
-            }}""")
-            await page.wait_for_timeout(150)
+                if (titleEl) titleEl.textContent = podcastTitle;
+                document.getElementById('concept-display').src = imageUri;
+                document.getElementById('topic-text').textContent = topic;
+                document.getElementById('concept-caption').textContent = caption;
+            }""", {
+                "podcastTitle": podcast_title,
+                "imageUri": img_uri,
+                "topic": topic,
+                "caption": caption,
+            })
+            await page.wait_for_function("""() => {
+                const image = document.getElementById('concept-display');
+                return image && image.complete && image.naturalWidth > 0;
+            }""")
             await page.screenshot(path=str(out_frame))
             print(f"    ✓ 舞台畫格 {idx:02d}: {topic} -> {out_frame.name}")
 
