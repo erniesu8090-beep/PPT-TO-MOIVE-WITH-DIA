@@ -9,6 +9,11 @@ import subprocess
 from pathlib import Path
 
 if sys.platform == "win32":
+    if getattr(sys.flags, "utf8_mode", 0) == 0:
+        env = os.environ.copy()
+        env["PYTHONUTF8"] = "1"
+        res = subprocess.run([sys.executable, "-X", "utf8"] + sys.argv, env=env)
+        sys.exit(res.returncode)
     sys.stdout.reconfigure(encoding="utf-8")
 
 MODULE_DIR = Path(__file__).parent.resolve()
