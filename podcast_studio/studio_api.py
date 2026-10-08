@@ -126,7 +126,9 @@ async def render_single_scene_async(proj_dir: Path, chapter_index: int):
     if not chapters_file.exists():
         return False
     data = json.loads(chapters_file.read_text(encoding="utf-8"))
-    chapter = next((c for c in data.get("chapters", []) if c["chapter_index"] == chapter_index), None)
+    podcast_title = data.get("podcast_title", proj_dir.name)
+    chapters = data.get("chapters", [])
+    chapter = next((c for c in chapters if c["chapter_index"] == chapter_index), None)
     if not chapter:
         return False
 
@@ -135,26 +137,30 @@ async def render_single_scene_async(proj_dir: Path, chapter_index: int):
     concepts_dir = proj_dir / "concepts"
 
     html_path = (TEMPLATES_DIR / "studio_stage.html").as_uri()
-
-    concept_img = concepts_dir / f"concept_{chapter_index:02d}.jpg"
-    if not concept_img.exists():
-        concept_img = concepts_dir / "concept_01.jpg"
+    intro_html_path = (TEMPLATES_DIR / "intro_cover.html").as_uri()
 
     topic = chapter.get("topic", "")
     caption = chapter.get("caption", "")
-    img_uri = concept_img.as_uri()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         page = await browser.new_page(viewport={"width": 1920, "height": 1080})
+        out_frame = scenes_dir / f"scene_{chapter_index:02d}.png"
+
         await page.goto(html_path)
+        concept_img = concepts_dir / f"concept_{chapter_index:02d}.jpg"
+        if not concept_img.exists():
+            concept_img = concepts_dir / "concept_01.jpg"
+        img_uri = concept_img.as_uri()
+
         await page.evaluate(f"""() => {{
+            const titleEl = document.getElementById('podcast-title');
+            if (titleEl) titleEl.textContent = '{podcast_title}';
             document.getElementById('concept-display').src = '{img_uri}';
             document.getElementById('topic-text').textContent = '{topic}';
             document.getElementById('concept-caption').textContent = '{caption}';
         }}""")
         await page.wait_for_timeout(150)
-        out_frame = scenes_dir / f"scene_{chapter_index:02d}.png"
         await page.screenshot(path=str(out_frame))
         await browser.close()
     return True
