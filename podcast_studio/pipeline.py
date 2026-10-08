@@ -251,7 +251,6 @@ async def render_scenes_async(proj_dir: Path):
     concepts_dir = proj_dir / "concepts"
 
     stage_html = (TEMPLATES_DIR / "studio_stage.html").as_uri()
-    intro_html = (TEMPLATES_DIR / "intro_cover.html").as_uri()
 
     print(f"  [Playwright] 正在高速截取 {len(chapters)} 個章節 1080p 舞台畫格...")
     async with async_playwright() as p:
@@ -264,53 +263,23 @@ async def render_scenes_async(proj_dir: Path):
             topic = ch["topic"]
             caption = ch["caption"]
 
-            if idx == 0 and (TEMPLATES_DIR / "intro_cover.html").exists():
-                await page.goto(intro_html)
-                h1_title = chapters[1].get("topic", "心理陰影與投射") if len(chapters) > 1 else "核心議題一"
-                h1_desc = chapters[1].get("key_insight", "") if len(chapters) > 1 else ""
-                h2_title = chapters[min(4, len(chapters)-1)].get("topic", "面具與情結機制") if len(chapters) > 4 else "核心議題二"
-                h2_desc = chapters[min(4, len(chapters)-1)].get("key_insight", "") if len(chapters) > 4 else ""
-                h3_title = chapters[min(7, len(chapters)-1)].get("topic", "自性化整合之道") if len(chapters) > 7 else "核心議題三"
-                h3_desc = chapters[min(7, len(chapters)-1)].get("key_insight", "") if len(chapters) > 7 else ""
+            await page.goto(stage_html)
+            concept_img = concepts_dir / f"concept_{idx:02d}.jpg"
+            if not concept_img.exists():
+                concept_img = concepts_dir / "concept_01.jpg"
 
-                await page.evaluate(f"""() => {{
-                    const titleEl = document.getElementById('cover-title');
-                    if (titleEl) titleEl.textContent = '{podcast_title}';
-                    const subEl = document.getElementById('cover-subtitle');
-                    if (subEl) subEl.textContent = '{caption}';
-                    const hCards = document.querySelectorAll('.highlight-card');
-                    if (hCards.length >= 3) {{
-                        hCards[0].querySelector('.highlight-title').innerHTML = '<span>🎭</span> {h1_title}';
-                        hCards[0].querySelector('.highlight-desc').textContent = '{h1_desc}';
-                        hCards[1].querySelector('.highlight-title').innerHTML = '<span>🪞</span> {h2_title}';
-                        hCards[1].querySelector('.highlight-desc').textContent = '{h2_desc}';
-                        hCards[2].querySelector('.highlight-title').innerHTML = '<span>🧭</span> {h3_title}';
-                        hCards[2].querySelector('.highlight-desc').textContent = '{h3_desc}';
-                    }}
-                }}""")
-                await page.wait_for_timeout(200)
-                await page.screenshot(path=str(out_frame))
-                out_concept = concepts_dir / f"concept_{idx:02d}.jpg"
-                shutil.copy(out_frame, out_concept)
-                print(f"    ✓ 封面畫格 {idx:02d}: {topic} -> {out_frame.name}")
-            else:
-                await page.goto(stage_html)
-                concept_img = concepts_dir / f"concept_{idx:02d}.jpg"
-                if not concept_img.exists():
-                    concept_img = concepts_dir / "concept_01.jpg"
+            img_uri = concept_img.as_uri()
 
-                img_uri = concept_img.as_uri()
-
-                await page.evaluate(f"""() => {{
-                    const titleEl = document.getElementById('podcast-title');
-                    if (titleEl) titleEl.textContent = '{podcast_title}';
-                    document.getElementById('concept-display').src = '{img_uri}';
-                    document.getElementById('topic-text').textContent = '{topic}';
-                    document.getElementById('concept-caption').textContent = '{caption}';
-                }}""")
-                await page.wait_for_timeout(150)
-                await page.screenshot(path=str(out_frame))
-                print(f"    ✓ 舞台畫格 {idx:02d}: {topic} -> {out_frame.name}")
+            await page.evaluate(f"""() => {{
+                const titleEl = document.getElementById('podcast-title');
+                if (titleEl) titleEl.textContent = '{podcast_title}';
+                document.getElementById('concept-display').src = '{img_uri}';
+                document.getElementById('topic-text').textContent = '{topic}';
+                document.getElementById('concept-caption').textContent = '{caption}';
+            }}""")
+            await page.wait_for_timeout(150)
+            await page.screenshot(path=str(out_frame))
+            print(f"    ✓ 舞台畫格 {idx:02d}: {topic} -> {out_frame.name}")
 
         await browser.close()
     print("  ✓ 全章節畫格截取完畢！")
