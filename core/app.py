@@ -389,6 +389,67 @@ def calculate_dynamic_timings():
         
     return pages_timings
 
+# Limit simultaneous pages while keeping per-page files and subtitle offsets.
+TTS_CONCURRENCY = 3
+TTS_REQUEST_TIMEOUT = 180
+
+
+async def collect_tts_stream(text, voice, kwargs):
+    import aiohttp
+
+    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+
+    async def collect():
+        communicate = edge_tts.Communicate(text, voice, **kwargs, connector=connector)
+        audio_bytes = bytearray()
+        sentence_boundaries = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_bytes.extend(chunk["data"])
+            elif chunk["type"] == "SentenceBoundary":
+                sentence_boundaries.append({
+                    "text": chunk["text"],
+                    "start": chunk["offset"] / 10000000.0,
+                    "end": (chunk["offset"] + chunk["duration"]) / 10000000.0
+                })
+        return audio_bytes, sentence_boundaries
+
+    try:
+        return await asyncio.wait_for(collect(), timeout=TTS_REQUEST_TIMEOUT)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(f"Edge-TTS 請求超過 {TTS_REQUEST_TIMEOUT} 秒") from exc
+    finally:
+        await connector.close()
+
+
+async def generate_batch_tts(slides, voice_settings, log):
+    semaphore = asyncio.Semaphore(TTS_CONCURRENCY)
+
+    async def generate(slide, text):
+        num = slide["num"]
+        async with semaphore:
+            log(f"  正在產生第 {num} 頁配音...")
+            try:
+                await generate_page_tts(num, text, voice_settings)
+            except Exception as exc:
+                log(f"  ❌ 第 {num} 頁配音失敗：{exc}")
+                return num
+            log(f"  ✓ 第 {num} 頁配音完成")
+            return None
+
+    jobs = []
+    for slide in slides:
+        text = slide.get("narration", "")
+        if text.startswith("「") and text.endswith("」"):
+            text = text[1:-1]
+        if text.strip():
+            jobs.append(generate(slide, text))
+    results = await asyncio.gather(*jobs)
+    failed = [str(num) for num in results if num is not None]
+    if failed:
+        raise RuntimeError("配音失敗頁碼：" + "、".join(failed) + "；其餘頁面已完成，請重試失敗頁面。")
+
+
 # Compatibility wrapper for single speaker
 async def generate_tts(num, text, voice="zh-TW-YunJheNeural", rate="-5%", pitch="-2Hz"):
     vs = {"mode": "single", "voice": voice, "rate": rate, "pitch": pitch}
@@ -396,7 +457,6 @@ async def generate_tts(num, text, voice="zh-TW-YunJheNeural", rate="-5%", pitch=
 
 async def generate_page_tts(num, text, vs):
     out_file = OUT_DIR / f"page-{num:02d}.mp3"
-    import aiohttp
     proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("http_proxy") or os.environ.get("https_proxy") or None
 
     mode = vs.get("mode", "single")
@@ -451,26 +511,13 @@ async def generate_page_tts(num, text, vs):
                         if pitch: kwargs["pitch"] = pitch
                     if proxy:
                         kwargs["proxy"] = proxy
-                    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-                    communicate = edge_tts.Communicate(turn["text"], voice, **kwargs, connector=connector)
-                    
-                    audio_bytes = bytearray()
-                    sentence_boundaries = []
-                    async for chunk in communicate.stream():
-                        if chunk["type"] == "audio":
-                            audio_bytes.extend(chunk["data"])
-                        elif chunk["type"] == "SentenceBoundary":
-                            sentence_boundaries.append({
-                                "text": chunk["text"],
-                                "start": chunk["offset"] / 10000000.0,
-                                "end": (chunk["offset"] + chunk["duration"]) / 10000000.0
-                            })
+                    audio_bytes, sentence_boundaries = await collect_tts_stream(turn["text"], voice, kwargs)
 
                     with open(turn_file, "wb") as f_tf:
                         f_tf.write(audio_bytes)
                     turn_files.append(turn_file)
 
-                    t_dur = get_audio_duration(turn_file)
+                    t_dur = await asyncio.to_thread(get_audio_duration, turn_file)
                     turn_durations.append(t_dur)
 
                     if sentence_boundaries:
@@ -531,7 +578,7 @@ async def generate_page_tts(num, text, vs):
                     f_c.write(f"file '{tf.name}'\n")
             
             cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_txt), "-c:a", "libmp3lame", str(out_file)]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            await asyncio.to_thread(subprocess.run, cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
             for tf in turn_files:
                 try: tf.unlink()
@@ -554,20 +601,7 @@ async def generate_page_tts(num, text, vs):
                     if pitch: kwargs["pitch"] = pitch
                 if proxy:
                     kwargs["proxy"] = proxy
-                connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-                communicate = edge_tts.Communicate(text, voice, **kwargs, connector=connector)
-                
-                audio_bytes = bytearray()
-                sentence_boundaries = []
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        audio_bytes.extend(chunk["data"])
-                    elif chunk["type"] == "SentenceBoundary":
-                        sentence_boundaries.append({
-                            "text": chunk["text"],
-                            "start": chunk["offset"] / 10000000.0,
-                            "end": (chunk["offset"] + chunk["duration"]) / 10000000.0
-                        })
+                audio_bytes, sentence_boundaries = await collect_tts_stream(text, voice, kwargs)
 
                 with open(out_file, "wb") as f_out:
                     f_out.write(audio_bytes)
@@ -845,17 +879,8 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 else:
                     slides = []
                     
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                for s in slides:
-                    num = s["num"]
-                    text = s.get("narration", "")
-                    if text.startswith("「") and text.endswith("」"):
-                        text = text[1:-1]
-                    if text:
-                        log_sse(f"  正在產生第 {num} 頁配音 (語音模式: {voice_settings.get('mode', 'single')})...")
-                        loop.run_until_complete(generate_page_tts(num, text, voice_settings))
-                loop.close()
+                log_sse(f"  批次生成配音，最多同時處理 {TTS_CONCURRENCY} 頁")
+                asyncio.run(generate_batch_tts(slides, voice_settings, log_sse))
                 log_sse("✓ 所有投影片配音產生完畢！")
 
                 log_sse("\n--- [2/4] 開始重新計算與儲存分頁時序 ---")
@@ -1042,10 +1067,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 text_clean = text_clean[1:-1]
                 
             try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                audio_file = loop.run_until_complete(generate_page_tts(num, text_clean, voice_settings))
-                loop.close()
+                audio_file = asyncio.run(generate_page_tts(num, text_clean, voice_settings))
                 
                 dur_seconds = get_audio_duration(audio_file)
                 calculate_dynamic_timings()

@@ -17,7 +17,7 @@ echo.
 echo Starting backend server: http://localhost:8000/ ...
 start http://localhost:8000/
 
-%PY_CMD% app.py
+"%PY_CMD%" app.py
 if errorlevel 1 (
     echo.
     echo [ERROR] Server encountered an error.
