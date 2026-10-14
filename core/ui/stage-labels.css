@@ -1,0 +1,18 @@
+/* Shared by the editor preview and the generated 1920 x 1080 video stage. */
+.video-label-layer {
+    position: absolute; top: 0; left: 0; width: 1920px; height: 1080px;
+    transform-origin: top left; pointer-events: none; overflow: hidden;
+    font-family: 'GenSeki TW', sans-serif; line-height: normal; z-index: 10;
+}
+.video-label-layer .video-chapter {
+    position: absolute; top: 28px; left: 48px;
+    display: var(--chapter-display, block);
+    font-family: 'GenSeki TW', sans-serif; font-weight: 700;
+    font-size: var(--chapter-size, 24px); letter-spacing: .15em; color: #fff;
+    text-shadow: 0 2px 8px rgba(0,0,0,.6);
+}
+.video-label-layer .video-page-num {
+    display: inline; color: #fff; background: var(--chapter-color, #0E7C7B);
+    padding: 4px 14px; border-radius: 6px; font-weight: 900; margin-right: 12px;
+    box-shadow: 0 2px 10px var(--chapter-shadow, #0e7c7b66);
+}

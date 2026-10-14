@@ -47,8 +47,6 @@ def build():
         "show_page_number": True,
         "bg_color": "#0E7C7B",
         "font_size": 24,
-        "show_version_badge": False,
-        "version_text": "SLIDE EDITION v3.0.0 (2026/10/05)"
     }
     chap_settings_path = Path("chapter_settings.json")
     if chap_settings_path.exists():
@@ -61,51 +59,18 @@ def build():
     show_page_number = chapter_settings.get("show_page_number", True)
     chap_bg_color = chapter_settings.get("bg_color", "#0E7C7B")
     chap_font_size = chapter_settings.get("font_size", 24)
-    show_version_badge = chapter_settings.get("show_version_badge", False)
-    version_text = chapter_settings.get("version_text", "SLIDE EDITION v3.0.0 (2026/10/05)")
     r, g, b = hex_to_rgb(chap_bg_color)
 
-    if not show_page_number:
-        chapter_css = "  .chapter { display: none !important; }"
-    else:
-        chapter_css = f"""  .chapter {{
-    position: absolute; top: 28px; left: 48px;
-    font-family: 'GenSeki TW', sans-serif; font-weight: 700;
-    font-size: {chap_font_size}px; letter-spacing: 0.15em; color: #fff;
-    text-shadow: 0 2px 8px rgba(0,0,0,0.6);
-    z-index: 10;
-  }}
-  .chapter .num {{
-    color: #fff; background: {chap_bg_color};
-    padding: 4px 14px; border-radius: 6px; font-weight: 900;
-    margin-right: 12px;
-    box-shadow: 0 2px 10px rgba({r},{g},{b},0.4);
-  }}"""
-
-    if not show_version_badge:
-        version_css = "  .version-badge { display: none !important; }"
-    else:
-        version_css = """  .version-badge {
-    position: absolute; top: 28px; right: 48px; z-index: 10;
-    display: inline-flex; align-items: center; gap: 10px;
-    background: rgba(18, 24, 33, 0.75);
-    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 9999px;
-    padding: 8px 22px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  }
-  .version-badge .version-dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background-color: #4e937a;
-    box-shadow: 0 0 8px rgba(78, 147, 122, 0.6);
-    flex-shrink: 0;
-  }
-  .version-badge .version-text {
-    font-family: 'GenSeki TW', system-ui, -apple-system, sans-serif;
-    font-weight: 700; font-size: 14px; letter-spacing: 0.08em;
-    color: #ffffff; text-transform: uppercase; white-space: nowrap;
-  }"""
+    # Use the same label layout as the editor's live preview.
+    shared_label_css = (Path(__file__).parent / "ui" / "stage-labels.css").read_text(encoding="utf-8")
+    chapter_css = shared_label_css + f"""
+    .video-label-layer {{
+        --chapter-display: {'block' if show_page_number else 'none'};
+        --chapter-size: {chap_font_size}px;
+        --chapter-color: {chap_bg_color};
+        --chapter-shadow: rgba({r},{g},{b},0.4);
+    }}"""
+    version_css = ""
 
     # Build subtitle style CSS based on settings
     font_size = subtitle_settings.get("font_size", 32)
@@ -170,29 +135,11 @@ def build():
     spk_b_name = spk_b.get("name", "對談者 B")
     spk_b_color = spk_b.get("color", "#fadb14")
 
-    # Serialize timings to JS string
-    pages_js = []
-    for p in timings:
-        clauses_list = []
-        for c in p['clauses']:
-            escaped_text = c['text'].replace('"', '\\"')
-            spk = c.get('speaker', 'A')
-            spk_name = c.get('speaker_name', spk_a_name if spk == 'A' else spk_b_name).replace('"', '\\"')
-            clauses_list.append(f'      {{ text: "{escaped_text}", start: {c["start"]}, end: {c["end"]}, speaker: "{spk}", speaker_name: "{spk_name}" }}')
-            
-        clauses_str = ",\n".join(clauses_list)
-        pages_js.append(f"""  {{
-    i: {p['i']},
-    dur: {p['dur']},
-    title: "{p['title']}",
-    audio_dur: {p['audio_dur']},
-    clauses: [
-{clauses_str}
-    ]
-  }}""")
-        
-    js_pages_array = "const PAGES = [\n" + ",\n".join(pages_js) + "\n];"
-    js_dual_config = f"const DUAL_CONFIG = {json.dumps(voice_settings, ensure_ascii=False)};"
+    # JSON data avoids interpreting titles/version labels as HTML or JavaScript.
+    def script_json(value):
+        return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    js_pages_array = "const PAGES = " + script_json(timings) + ";"
+    js_dual_config = "const DUAL_CONFIG = " + script_json(voice_settings) + ";"
 
     # HTML template
     html_content = f"""<!doctype html>
@@ -398,9 +345,12 @@ PAGES.forEach(p => {{
   slideEl.innerHTML = `
     <div class="img" style="background-image:url('assets/images/page-${{String(p.i).padStart(2, '0')}}.png')"></div>
     <div class="vignette"></div>
-    <div class="chapter"><span class="num">${{String(p.i).padStart(2, '0')}}</span> / ${{PAGES.length}} — ${{p.title}}</div>
-    <div class="version-badge"><span class="version-dot"></span><span class="version-text">{version_text}</span></div>
+    <div class="video-label-layer">
+      <div class="video-chapter"><span class="video-page-num"></span><span class="video-page-title"></span></div>
+    </div>
   `;
+  slideEl.querySelector('.video-page-num').textContent = String(p.i).padStart(2, '0');
+  slideEl.querySelector('.video-page-title').textContent = ` / ${{PAGES.length}} — ${{p.title}}`;
   stage.appendChild(slideEl);
 }});
 

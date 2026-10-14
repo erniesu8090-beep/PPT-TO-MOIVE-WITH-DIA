@@ -4,6 +4,7 @@ sys.modules['aiodns'] = None  # Prevent broken aiodns on Windows
 
 import http.server
 import json
+import html as html_utils
 import urllib.parse
 import subprocess
 import pathlib
@@ -18,6 +19,9 @@ import shutil
 import hashlib
 import tempfile
 import threading
+import uuid
+from job_control import JobControl
+from project_import import import_project
 
 from media_utils import get_audio_duration
 from subtitle_styles import ass_header, style_values
@@ -37,6 +41,7 @@ if sys.platform == "win32":
 
 # All HTTP operations that write project files share this lock.
 PROJECT_LOCK = threading.Lock()
+RENDER_JOB = JobControl()
 
 
 def clean_narration(text):
@@ -79,64 +84,26 @@ def decode_base64_file(data_url):
     return base64.b64decode(base64_data)
 
 # Helper to render PDF slides into images
-def render_uploaded_slides(pdf_bytes):
-    temp_pdf = WORKSPACE_DIR / "assets" / "temp_slides.pdf"
-    with open(temp_pdf, "wb") as f:
-        f.write(pdf_bytes)
-        
-    doc = fitz.open(temp_pdf)
-    num_slides = len(doc)
-    
-    # Delete old slide images
-    images_dir = WORKSPACE_DIR / "assets" / "images"
-    if images_dir.exists():
-        for old_img in images_dir.glob("page-*.png"):
-            try:
-                old_img.unlink()
-            except Exception:
-                pass
-    else:
-        images_dir.mkdir(parents=True, exist_ok=True)
-        
-    # Delete old narration audio files
-    narration_dir = WORKSPACE_DIR / "assets" / "narration"
-    if narration_dir.exists():
-        for old_audio in narration_dir.glob("page-*.*"):
-            try:
-                old_audio.unlink()
-            except Exception:
-                pass
-    else:
-        narration_dir.mkdir(parents=True, exist_ok=True)
-        
-    for i, page in enumerate(doc):
-        rect = page.rect
-        width = rect.width
-        zoom_factor = max(1920.0 / width, 2.0)
-        
-        mat = fitz.Matrix(zoom_factor, zoom_factor)
-        pix = page.get_pixmap(matrix=mat)
-        
-        out_path = images_dir / f"page-{i+1:02d}.png"
-        pix.save(str(out_path))
-        
-    doc.close()
-    
-    try:
-        temp_pdf.unlink()
-    except Exception:
-        pass
-        
-    return num_slides
+def render_uploaded_slides(pdf_bytes, *, workspace=None):
+    workspace = pathlib.Path(workspace) if workspace is not None else WORKSPACE_DIR
+    # This helper only accepts a fresh staging area; never erase a live project.
+    images_dir = workspace / "assets" / "images"
+    narration_dir = workspace / "assets" / "narration"
+    if any(images_dir.glob('*')) or any(narration_dir.glob('*')):
+        raise ValueError("簡報必須先匯入空白暫存目錄。")
+    images_dir.mkdir(parents=True, exist_ok=True)
+    narration_dir.mkdir(parents=True, exist_ok=True)
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        for i, page in enumerate(doc):
+            zoom = max(1920.0 / page.rect.width, 2.0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            pix.save(str(images_dir / f"page-{i+1:02d}.png"))
+        return len(doc)
 
 # Helper to extract text from PDF bytes using PyMuPDF
 def extract_text_from_pdf_bytes(pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    text = ""
-    for page in doc:
-        text += page.get_text() + "\n"
-    doc.close()
-    return text
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        return "\n".join(page.get_text() for page in doc)
 
 def chinese_to_int(ch_str):
     mapping = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
@@ -153,7 +120,9 @@ def chinese_to_int(ch_str):
     return 1
 
 # Helper to parse text narration and save it
-def parse_and_save_narration(text, num_slides):
+def parse_and_save_narration(text, num_slides, *, workspace=None):
+    workspace = pathlib.Path(workspace) if workspace is not None else WORKSPACE_DIR
+    narration_dir = workspace / "assets" / "narration" if workspace != WORKSPACE_DIR else OUT_DIR
     # CJK space cleaning
     general_cjk = r'[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef\u201c\u201d\u300c\u300d\u300e\u300f\u3010\u3011\u2026\uff5b\uff5d]'
     cjk_pattern = re.compile(rf'(?<={general_cjk})\s+(?={general_cjk})')
@@ -226,11 +195,13 @@ def parse_and_save_narration(text, num_slides):
                 'title': f"第 {page_num} 頁",
                 'narration': ""
             })
+    if any(p["num"] < 1 or p["num"] > num_slides for p in slide_pages) or len({p["num"] for p in slide_pages}) != len(slide_pages):
+        raise ValueError("口白頁碼重複或超過簡報頁數，請修正後重新匯入。")
     # Sort slides by page number
     slide_pages.sort(key=lambda x: x["num"])
             
     # Save JSON file
-    cleaned_path = WORKSPACE_DIR / "口白_cleaned.json"
+    cleaned_path = workspace / "口白_cleaned.json"
     with open(cleaned_path, "w", encoding="utf-8") as f:
         json.dump(slide_pages, f, ensure_ascii=False, indent=2)
 
@@ -273,13 +244,15 @@ def parse_dialogue_turns(text):
     return turns
 
 
-def calculate_dynamic_timings():
-    cleaned_path = WORKSPACE_DIR / "口白_cleaned.json"
+def calculate_dynamic_timings(*, workspace=None):
+    workspace = pathlib.Path(workspace) if workspace is not None else WORKSPACE_DIR
+    narration_dir = workspace / "assets" / "narration" if workspace != WORKSPACE_DIR else OUT_DIR
+    cleaned_path = workspace / "口白_cleaned.json"
     if not cleaned_path.exists():
         return []
     
     pad_time = 1.5
-    voice_path = WORKSPACE_DIR / "voice_settings.json"
+    voice_path = workspace / "voice_settings.json"
     voice_settings = {}
     if voice_path.exists():
         try:
@@ -303,10 +276,10 @@ def calculate_dynamic_timings():
         text = s.get("narration", "")
         
         text_clean = clean_narration(text)
-        audio_file = OUT_DIR / f"page-{num:02d}.mp3"
-        meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
+        audio_file = narration_dir / f"page-{num:02d}.mp3"
+        meta_file = narration_dir / f"page-{num:02d}-meta.json"
         turn_durations, exact_clauses = [], []
-        generated = audio_matches_cache(num, text_clean, voice_settings)
+        generated = audio_matches_cache(num, text_clean, voice_settings, out_dir=narration_dir)
         if not parse_dialogue_turns(text_clean):
             audio_dur = silent_page_duration(voice_settings)
             audio_status = "silent"
@@ -398,7 +371,7 @@ def calculate_dynamic_timings():
         })
         
     # Save timings_dynamic.json
-    with open(WORKSPACE_DIR / "timings_dynamic.json", "w", encoding="utf-8") as f_dyn:
+    with open(workspace / "timings_dynamic.json", "w", encoding="utf-8") as f_dyn:
         json.dump(pages_timings, f_dyn, ensure_ascii=False, indent=2)
         
     # Save timings.json
@@ -413,7 +386,7 @@ def calculate_dynamic_timings():
             "silent": p["silent"],
             "dur": p["dur"]
         })
-    with open(WORKSPACE_DIR / "timings.json", "w", encoding="utf-8") as f_simple:
+    with open(workspace / "timings.json", "w", encoding="utf-8") as f_simple:
         json.dump(simple_timings, f_simple, ensure_ascii=False, indent=2)
         
     return pages_timings
@@ -508,10 +481,13 @@ async def collect_tts_stream(text, voice, kwargs):
 
 async def generate_batch_tts(slides, voice_settings, log, *, force=False):
     semaphore = asyncio.Semaphore(TTS_CONCURRENCY)
+    completed = 0
 
     async def generate(slide, text):
+        nonlocal completed
         num = slide["num"]
         async with semaphore:
+            await asyncio.to_thread(RENDER_JOB.checkpoint)
             try:
                 cached = not force and await asyncio.to_thread(audio_matches_cache, num, text, voice_settings)
                 log(f"  第 {num} 頁：" + ("沿用配音快取" if cached else "產生配音" if tts_plan(text, voice_settings)["mode"] != "silent" else "產生靜音頁"))
@@ -522,7 +498,10 @@ async def generate_batch_tts(slides, voice_settings, log, *, force=False):
             except Exception as exc:
                 log(f"  ❌ 第 {num} 頁配音失敗：{exc}")
                 return num
-            log(f"  ✓ 第 {num} 頁配音完成")
+            completed += 1
+            if RENDER_JOB.active:
+                RENDER_JOB.stage = f"配音完成 {completed}／{len(slides)} 頁"
+            log(f"  ✓ 第 {num} 頁配音完成（{completed}／{len(slides)}）")
             return None
 
     jobs = []
@@ -571,9 +550,10 @@ def tts_cache_key(text, settings):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
 
 
-def audio_matches_cache(num, text, settings):
-    audio = OUT_DIR / f"page-{num:02d}.mp3"
-    meta_path = OUT_DIR / f"page-{num:02d}-meta.json"
+def audio_matches_cache(num, text, settings, *, out_dir=None):
+    out_dir = OUT_DIR if out_dir is None else out_dir
+    audio = out_dir / f"page-{num:02d}.mp3"
+    meta_path = out_dir / f"page-{num:02d}-meta.json"
     try:
         meta = json.loads(meta_path.read_text(encoding='utf-8'))
         return (meta.get('cache_key') == tts_cache_key(text, settings)
@@ -735,10 +715,8 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(WORKSPACE_DIR), **kwargs)
 
     def end_headers(self):
-        # Disable cache for development
-        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
-        self.send_header('Pragma', 'no-cache')
-        self.send_header('Expires', '0')
+        image_request = urllib.parse.urlparse(self.path).path.startswith('/assets/images/')
+        self.send_header('Cache-Control', 'private, max-age=3600' if image_request else 'no-store')
         super().end_headers()
 
     def send_json(self, payload, status=200):
@@ -797,12 +775,20 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     shutil.copyfileobj(f, self.wfile)
                 return
 
+        if path == "/api/render_status":
+            self.send_json(RENDER_JOB.snapshot())
+            return
+
         if path == "/":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             commit_hash, commit_time = get_git_info()
-            html = HTML_TEMPLATE.replace("__GIT_COMMIT__", commit_hash).replace("__GIT_DATE__", commit_time)
+            try:
+                app_version = json.loads((WORKSPACE_DIR / "package.json").read_text(encoding="utf-8"))["version"]
+            except (OSError, ValueError, KeyError):
+                app_version = "3.0.0"
+            html = HTML_TEMPLATE.replace("__APP_VERSION__", html_utils.escape(str(app_version))).replace("__GIT_COMMIT__", commit_hash).replace("__GIT_DATE__", commit_time)
             self.wfile.write(html.encode('utf-8'))
             return
             
@@ -893,8 +879,6 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "show_page_number": True,
                 "bg_color": "#0E7C7B",
                 "font_size": 24,
-                "show_version_badge": True,
-                "version_text": "SLIDE EDITION v3.0.0 (2026/10/05)"
             }
             chap_path = WORKSPACE_DIR / "chapter_settings.json"
             if chap_path.exists():
@@ -924,6 +908,15 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
 
+            versions = []
+            for slide in data:
+                image = images_dir / f"page-{slide['num']:02d}.png"
+                version = str(image.stat().st_mtime_ns) if image.exists() else "missing"
+                slide["image_version"] = version
+                versions.append(version)
+                slide["audio_status"] = ("silent" if not parse_dialogue_turns(clean_narration(slide.get("narration", "")))
+                    else "ready" if audio_matches_cache(slide["num"], clean_narration(slide.get("narration", "")), voice_settings) else "pending")
+            project_info.setdefault("project_id", hashlib.sha256("|".join(versions).encode()).hexdigest()[:24])
             response = {
                 "slides": data,
                 "voice_settings": voice_settings,
@@ -946,9 +939,16 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             
+            log_dir = WORKSPACE_DIR / "renders" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8]
+            log_path = log_dir / (job_id + ".log")
+            RENDER_JOB.start(log_dir / (job_id + ".pause"))
             connected = True
             def emit_sse(payload):
                 nonlocal connected
+                if payload.get('complete') or payload.get('error'):
+                    RENDER_JOB.result = payload
                 if connected:
                     try:
                         self.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode('utf-8'))
@@ -957,9 +957,18 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         connected = False
 
             def log_sse(msg):
+                with log_path.open("a", encoding="utf-8") as log_file:
+                    log_file.write(msg + "\n")
                 emit_sse({"log": msg})
 
+            def stage(label):
+                RENDER_JOB.checkpoint()
+                RENDER_JOB.stage = label
+                emit_sse({"stage": label})
+
             try:
+                emit_sse({"log_url": "/renders/logs/" + log_path.name})
+                stage("配音完成 0 頁")
                 # 1. Generate/regenerate TTS for all slides
                 log_sse("--- [1/4] 開始檢查並產生所有分頁配音 (Edge-TTS 雙人/單人模式) ---")
                 voice_settings = {
@@ -997,10 +1006,12 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 log_sse("✓ 所有投影片配音產生完畢！")
 
                 log_sse("\n--- [2/4] 開始重新計算與儲存分頁時序 ---")
+                stage("計算投影片時序")
                 calculate_dynamic_timings()
                 log_sse("✓ 成功計算 timings.json 與 timings_dynamic.json")
                 
                 log_sse("\n--- [3/4] 開始編譯網頁動畫範本 (build_index.py) ---")
+                stage("編譯影片畫面")
                 build_proc = subprocess.Popen(
                     [sys.executable, "build_index.py"],
                     cwd=str(WORKSPACE_DIR),
@@ -1030,6 +1041,9 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 env = os.environ.copy()
                 env["PYTHONUTF8"] = "1"
                 env["VIDEO_CRF"] = str(crf_value)
+                env["RENDER_PAUSE_FILE"] = str(RENDER_JOB.marker)
+                env["PYTHONUNBUFFERED"] = "1"
+                stage("擷取畫面與合成影片")
                 
                 render_proc = subprocess.Popen(
                     [sys.executable, "render.py"],
@@ -1045,7 +1059,12 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 srt_filename = None
                 for line in render_proc.stdout:
                     stripped = line.strip()
-                    if stripped.startswith("OUTPUT_FILENAME:"):
+                    if stripped.startswith("CONTROL:"):
+                        RENDER_JOB.paused = stripped == "CONTROL:paused" and RENDER_JOB.requested
+                    elif stripped.startswith("STAGE:"):
+                        RENDER_JOB.stage = stripped[6:]
+                        emit_sse({"stage": RENDER_JOB.stage})
+                    elif stripped.startswith("OUTPUT_FILENAME:"):
                         final_video_name = stripped.split("OUTPUT_FILENAME:", 1)[1].strip()
                     elif stripped.startswith("OUTPUT_FILENAME_CLEAN:"):
                         clean_video_name = stripped.split("OUTPUT_FILENAME_CLEAN:", 1)[1].strip()
@@ -1077,6 +1096,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 log_sse(f"錯誤: {str(e)}")
                 emit_sse({'error': str(e)})
             finally:
+                RENDER_JOB.finish()
                 self.close_connection = True
             return
             
@@ -1084,7 +1104,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         preview_only = urllib.parse.urlparse(self.path).path == "/api/subtitle_preview"
-        locked = not preview_only
+        locked = not preview_only and urllib.parse.urlparse(self.path).path != "/api/render_control"
         if locked and not PROJECT_LOCK.acquire(blocking=False):
             self.send_json({"success": False, "error": "目前正在處理專案，請等作業完成後再操作。"}, 409)
             return
@@ -1118,6 +1138,12 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         payload = json.loads(post_data.decode('utf-8'))
         print("[DEBUG] JSON 解析成功，開始路由處理。", flush=True)
         
+        if path == "/api/render_control":
+            if payload.get("action") not in ("pause", "resume"):
+                raise ValueError("未知的製作控制操作。")
+            self.send_json(RENDER_JOB.request(payload["action"] == "pause"))
+            return
+
         if path == "/api/subtitle_frame":
             self.send_json(actual_subtitle_frame(payload))
             return
@@ -1309,32 +1335,15 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             narration_data = payload.get("narration_data")
             
             try:
-                # Save project info
-                project_info = {
-                    "slide_pdf_name": slide_pdf_name
-                }
-                with open(WORKSPACE_DIR / "project_info.json", "w", encoding="utf-8") as f_pi:
-                    json.dump(project_info, f_pi, ensure_ascii=False, indent=2)
+                num_slides, backup_path = import_project(
+                    WORKSPACE_DIR, payload, render_uploaded_slides, parse_and_save_narration,
+                    calculate_dynamic_timings, decode_base64_file, extract_text_from_pdf_bytes)
+                RENDER_JOB.result = None
+                RENDER_JOB.log_url = None
 
-                # 1. Decode & render slides
-                slide_pdf_bytes = decode_base64_file(slide_pdf_b64)
-                num_slides = render_uploaded_slides(slide_pdf_bytes)
-                
-                # 2. Extract and parse narration script
-                if narration_type == "pdf":
-                    narration_pdf_bytes = decode_base64_file(narration_data)
-                    script_text = extract_text_from_pdf_bytes(narration_pdf_bytes)
-                else:
-                    script_text = narration_data
-                    
-                parse_and_save_narration(script_text, num_slides)
-                
-                # 3. Recalculate timings
-                calculate_dynamic_timings()
-                
                 response = {
                     "success": True,
-                    "num_slides": num_slides
+                    "num_slides": num_slides, "backup_path": backup_path
                 }
             except Exception as e:
                 response = {
@@ -1358,6 +1367,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>影片製作工坊 · Video Workshop</title>
     <link rel="stylesheet" href="/ui/studio.css">
+    <link rel="stylesheet" href="/ui/stage-labels.css">
 </head>
 <body>
     <header>
@@ -1366,8 +1376,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div><h1>影片製作工坊</h1><p class="brand-subtitle">VIDEO WORKSHOP / CREATIVE STUDIO</p></div>
         </div>
         <div class="header-actions">
-            <div class="version-badge"><span class="version-dot"></span><span>本機創作工作區</span></div>
-            <button class="secondary" onclick="document.getElementById('compileCard').scrollIntoView({behavior: 'smooth', block: 'start'}); document.getElementById('btnRenderVideo').focus({preventScroll: true})">輸出影片 ↗</button>
+            <div class="version-badge app-version" aria-label="程式版本"><span class="version-dot"></span><span>v__APP_VERSION__</span></div>
         </div>
     </header>
 
@@ -1379,16 +1388,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="card import-card">
                 <div class="import-title">開始一個新故事</div>
                 <p class="import-help">匯入簡報 PDF 與口白，<br>把想法變成有聲有色的影片。</p>
-                <div style="display: flex; flex-direction: column; gap: 8px; font-size: 12px;">
+                <div style="display: flex; flex-direction: column; gap: 8px; font-size: 14px;">
                     <div>
-                        <label style="font-size: 11px; margin-bottom: 2px; display: block; color: var(--text-color)">1. 簡報投影片 PDF</label>
-                        <input type="file" id="slidePdfFile" accept=".pdf" style="font-size: 11px; width: 100%; color: var(--text-muted);">
+                        <label style="font-size: 14px; margin-bottom: 2px; display: block; color: var(--text-color)">1. 簡報投影片 PDF</label>
+                        <input type="file" id="slidePdfFile" accept=".pdf" style="font-size: 14px; width: 100%; color: var(--text-muted);">
                     </div>
                     <div>
-                        <label style="font-size: 11px; margin-bottom: 2px; display: block; color: var(--text-color)">2. 口白檔案 (.pdf / .txt)</label>
-                        <input type="file" id="narrationFile" accept=".pdf,.txt" style="font-size: 11px; width: 100%; color: var(--text-muted);">
+                        <label style="font-size: 14px; margin-bottom: 2px; display: block; color: var(--text-color)">2. 口白檔案 (.pdf / .txt)</label>
+                        <input type="file" id="narrationFile" accept=".pdf,.txt" style="font-size: 14px; width: 100%; color: var(--text-muted);">
                     </div>
-                    <button class="primary" id="btnUploadProject" style="font-size: 11px; padding: 6px 12px; margin-top: 6px; width: 100%;">
+                    <button class="primary" id="btnUploadProject" style="font-size: 14px; padding: 6px 12px; margin-top: 6px; width: 100%;">
                         ＋ 匯入專案
                     </button>
                 </div>
@@ -1445,9 +1454,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                             <label for="slideNarration">旁白內容</label>
                             <div id="dialogueTagContainer" style="display: none; gap: 6px; align-items: center;">
-                                <span style="font-size: 11px; color: var(--text-muted);">快速插入對話標點:</span>
-                                <button type="button" class="secondary" onclick="insertTag('A: ')" style="padding: 2px 8px; font-size: 11px; background: rgba(6,182,212,0.15); color: #06b6d4; border-color: rgba(6,182,212,0.3);">+ A (主持人)</button>
-                                <button type="button" class="secondary" onclick="insertTag('B: ')" style="padding: 2px 8px; font-size: 11px; background: rgba(139,92,246,0.15); color: #8b5cf6; border-color: rgba(139,92,246,0.3);">+ B (對談者)</button>
+                                <span style="font-size: 14px; color: var(--text-muted);">快速插入對話標點:</span>
+                                <button type="button" class="secondary" onclick="insertTag('A: ')" style="padding: 2px 8px; font-size: 14px; background: rgba(140,185,151,0.15); color: #b8dbc1; border-color: #526f59;">+ A (主持人)</button>
+                                <button type="button" class="secondary" onclick="insertTag('B: ')" style="padding: 2px 8px; font-size: 14px; background: rgba(203,163,131,0.15); color: #e5c1a3; border-color: #806851;">+ B (對談者)</button>
                             </div>
                         </div>
                         <textarea id="slideNarration" placeholder="寫下這一頁想說的話… 雙人對談可使用 A: 與 B: 標記。"></textarea>
@@ -1461,7 +1470,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                     <div class="audio-player-container" id="audioContainer" style="display: none;">
                         <audio id="audioPlayer" controls></audio>
-                        <div id="audioDuration" style="font-size: 12px; color: var(--accent-color); font-weight: bold;"></div>
+                        <div id="audioDuration" style="font-size: 14px; color: var(--accent-color); font-weight: bold;"></div>
                     </div>
                 </div>
             </div>
@@ -1530,16 +1539,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div id="dualVoicePanel" style="display: none; background: #27352f; padding: 14px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 14px;">
                         
                         <!-- 雙人高對比推薦配色預設面板 -->
-                        <div style="background: #28332f; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 11px;">
+                        <div style="background: #28332f; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 14px;">
                             <div style="color: #aaa; font-weight: 600; margin-bottom: 6px;">✨ 推薦黑底高對比雙人配色組合：</div>
                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                                <button type="button" onclick="setDualColors('#40a9ff', '#fadb14')" style="padding: 3px 8px; font-size: 11px; background: rgba(64,169,255,0.15); color: #fff; border: 1px solid #40a9ff; border-radius: 4px; cursor: pointer;">
+                                <button type="button" onclick="setDualColors('#40a9ff', '#fadb14')" style="padding: 3px 8px; font-size: 14px; background: rgba(64,169,255,0.15); color: #fff; border: 1px solid #40a9ff; border-radius: 4px; cursor: pointer;">
                                     <span style="color: #40a9ff;">■ A 亮藍</span> + <span style="color: #fadb14;">■ B 明黃</span> (推薦)
                                 </button>
-                                <button type="button" onclick="setDualColors('#ffffff', '#fadb14')" style="padding: 3px 8px; font-size: 11px; background: rgba(255,255,255,0.15); color: #fff; border: 1px solid #ffffff; border-radius: 4px; cursor: pointer;">
+                                <button type="button" onclick="setDualColors('#ffffff', '#fadb14')" style="padding: 3px 8px; font-size: 14px; background: rgba(255,255,255,0.15); color: #fff; border: 1px solid #ffffff; border-radius: 4px; cursor: pointer;">
                                     <span style="color: #ffffff;">■ A 純白</span> + <span style="color: #fadb14;">■ B 明黃</span>
                                 </button>
-                                <button type="button" onclick="setDualColors('#40a9ff', '#a0d911')" style="padding: 3px 8px; font-size: 11px; background: rgba(160,217,17,0.15); color: #fff; border: 1px solid #a0d911; border-radius: 4px; cursor: pointer;">
+                                <button type="button" onclick="setDualColors('#40a9ff', '#a0d911')" style="padding: 3px 8px; font-size: 14px; background: rgba(160,217,17,0.15); color: #fff; border: 1px solid #a0d911; border-radius: 4px; cursor: pointer;">
                                     <span style="color: #40a9ff;">■ A 亮藍</span> + <span style="color: #a0d911;">■ B 淺綠</span>
                                 </button>
                             </div>
@@ -1547,11 +1556,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                         <!-- Speaker A Box -->
                         <div style="margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px dashed var(--border-color);">
-                            <div style="font-size: 12px; font-weight: bold; color: #9dc5af; margin-bottom: 8px;">🔷 角色 A (主講人 / Host A)</div>
+                            <div style="font-size: 14px; font-weight: bold; color: #9dc5af; margin-bottom: 8px;">🔷 角色 A (主講人 / Host A)</div>
                             <div class="form-row" style="margin-bottom: 8px;">
                                 <div class="form-group">
                                     <label for="spkA_name">角色名稱</label>
-                                    <input type="text" id="spkA_name" value="主持人 A" style="padding: 6px 10px; font-size: 12px;">
+                                    <input type="text" id="spkA_name" value="主持人 A" style="padding: 6px 10px; font-size: 14px;">
                                 </div>
                                 <div class="form-group" style="flex: 0.5;">
                                     <label for="spkA_color">代表色</label>
@@ -1567,7 +1576,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             </div>
                             <div class="form-group" style="margin-bottom: 8px;">
                                 <label for="spkA_voice">角色 A 語音</label>
-                                <select id="spkA_voice" style="padding: 6px 10px; font-size: 12px;">
+                                <select id="spkA_voice" style="padding: 6px 10px; font-size: 14px;">
                                     <option value="zh-TW-YunJheNeural" selected>台灣雲哲 (男聲)</option>
                                     <option value="zh-TW-HsiaoChenNeural">台灣曉臻 (女聲)</option>
                                     <option value="zh-CN-YunjianNeural">國語雲健 (男聲)</option>
@@ -1577,7 +1586,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <div class="form-row">
                                 <div class="form-group">
                                     <label for="spkA_rate">角色 A 語速</label>
-                                    <select id="spkA_rate" style="padding: 6px 10px; font-size: 12px;">
+                                    <select id="spkA_rate" style="padding: 6px 10px; font-size: 14px;">
                                         <option value="-30%">很慢 (-30%)</option>
                                         <option value="-20%">較慢 (-20%)</option>
                                         <option value="-10%">稍慢 (-10%)</option>
@@ -1591,7 +1600,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 </div>
                                 <div class="form-group">
                                     <label for="spkA_pitch">角色 A 音高</label>
-                                    <select id="spkA_pitch" style="padding: 6px 10px; font-size: 12px;">
+                                    <select id="spkA_pitch" style="padding: 6px 10px; font-size: 14px;">
                                         <option value="-5Hz">低沈 (-5Hz)</option>
                                         <option value="-2Hz" selected>微低 (-2Hz)</option>
                                         <option value="0Hz">正常 (0Hz)</option>
@@ -1603,11 +1612,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                         <!-- Speaker B Box -->
                         <div>
-                            <div style="font-size: 12px; font-weight: bold; color: #d5b77e; margin-bottom: 8px;">💛 角色 B (對談者 / Guest B)</div>
+                            <div style="font-size: 14px; font-weight: bold; color: #d5b77e; margin-bottom: 8px;">💛 角色 B (對談者 / Guest B)</div>
                             <div class="form-row" style="margin-bottom: 8px;">
                                 <div class="form-group">
                                     <label for="spkB_name">角色名稱</label>
-                                    <input type="text" id="spkB_name" value="專家 B" style="padding: 6px 10px; font-size: 12px;">
+                                    <input type="text" id="spkB_name" value="專家 B" style="padding: 6px 10px; font-size: 14px;">
                                 </div>
                                 <div class="form-group" style="flex: 0.5;">
                                     <label for="spkB_color">代表色</label>
@@ -1623,7 +1632,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             </div>
                             <div class="form-group" style="margin-bottom: 8px;">
                                 <label for="spkB_voice">角色 B 語音</label>
-                                <select id="spkB_voice" style="padding: 6px 10px; font-size: 12px;">
+                                <select id="spkB_voice" style="padding: 6px 10px; font-size: 14px;">
                                     <option value="zh-TW-HsiaoChenNeural" selected>台灣曉臻 (女聲)</option>
                                     <option value="zh-TW-YunJheNeural">台灣雲哲 (男聲)</option>
                                     <option value="zh-CN-XiaoxiaoNeural">國語曉曉 (女聲)</option>
@@ -1633,7 +1642,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <div class="form-row">
                                 <div class="form-group">
                                     <label for="spkB_rate">角色 B 語速</label>
-                                    <select id="spkB_rate" style="padding: 6px 10px; font-size: 12px;">
+                                    <select id="spkB_rate" style="padding: 6px 10px; font-size: 14px;">
                                         <option value="-30%">很慢 (-30%)</option>
                                         <option value="-20%">較慢 (-20%)</option>
                                         <option value="-10%">稍慢 (-10%)</option>
@@ -1647,7 +1656,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 </div>
                                 <div class="form-group">
                                     <label for="spkB_pitch">角色 B 音高</label>
-                                    <select id="spkB_pitch" style="padding: 6px 10px; font-size: 12px;">
+                                    <select id="spkB_pitch" style="padding: 6px 10px; font-size: 14px;">
                                         <option value="-5Hz">低沈 (-5Hz)</option>
                                         <option value="-2Hz" selected>微低 (-2Hz)</option>
                                         <option value="0Hz">正常 (0Hz)</option>
@@ -1723,7 +1732,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label for="fontColor">字體顏色 <span style="font-size: 11px; color: #888;">(黑底建議高明度)</span></label>
+                                <label for="fontColor">字體顏色 <span style="font-size: 14px; color: #888;">(黑底建議高明度)</span></label>
                                 <select id="fontColor">
                                     <option value="white">白色 (White - 最推薦)</option>
                                     <option value="yellow">明黃 (Yellow - 對比最高)</option>
@@ -1731,7 +1740,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                     <option value="green">淺綠 (Light Green)</option>
                                     <option value="gray">淺灰 (Light Gray)</option>
                                 </select>
-                                <div style="font-size: 11px; color: #aaa; margin-top: 4px;">
+                                <div style="font-size: 14px; color: #aaa; margin-top: 4px;">
                                     💡 提示：黑底請避免深藍、深紅或高飽和螢光色。
                                 </div>
                             </div>
@@ -1796,6 +1805,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <span class="arrow-icon" aria-hidden="true">⌄</span>
                 </button>
                 <div class="collapsible-content" id="chapterCardContent">
+                    <div class="chapter-preview-toolbar"><strong>畫面與標籤即時預覽</strong><button class="secondary" type="button" id="btnEnlargeChapter">放大預覽 ↗</button></div>
+                    <div class="chapter-mini-frame">
+                        <img id="chapterPreviewImage" alt="目前投影片與標籤預覽" hidden>
+                        <p id="chapterPreviewEmpty">匯入投影片後即可預覽</p>
+                    </div>
+                    <p class="preview-note chapter-preview-note">調整後立即預覽；按下方儲存按鈕後套用至影片。放大可與字幕一起檢視。</p>
                     <div class="form-group" style="margin-bottom: 16px; display: flex; flex-direction: row; align-items: center; gap: 10px;">
                         <input type="checkbox" id="showPageNumber" checked style="width: 18px; height: 18px; cursor: pointer; flex-shrink: 0; margin-top: 2px;">
                         <label for="showPageNumber" style="cursor: pointer; margin-bottom: 0; user-select: none;">顯示左上角頁數與標題</label>
@@ -1817,18 +1832,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <input type="range" id="pageFontSize" min="14" max="40" value="24">
                     </div>
 
-                    <div style="margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--border-color);">
-                        <div class="form-group" style="margin-bottom: 12px; display: flex; flex-direction: row; align-items: center; gap: 10px;">
-                            <input type="checkbox" id="showVersionBadge" checked style="width: 18px; height: 18px; cursor: pointer; flex-shrink: 0; margin-top: 2px;">
-                            <label for="showVersionBadge" style="cursor: pointer; margin-bottom: 0; user-select: none;">顯示右上角版本標籤 (Version Badge)</label>
-                        </div>
-                        <div class="form-group" style="margin-bottom: 8px;">
-                            <label for="versionText">版本標籤文字</label>
-                            <input type="text" id="versionText" value="SLIDE EDITION v3.0.0 (2026/10/05)">
-                        </div>
-                    </div>
-
-                    <button class="secondary" id="btnSaveChapter" style="width: 100%; margin-top: 10px;">💾 套用並儲存頁面與版本樣式</button>
+                    <button class="secondary" id="btnSaveChapter" style="width: 100%; margin-top: 10px;">💾 套用並儲存畫面與標籤</button>
                 </div>
             </div>
 
@@ -1841,7 +1845,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <span id="videoCrfVal">27</span>
                     </div>
                     <input type="range" id="videoCrf" min="20" max="27" step="1" value="27" style="width: 100%;">
-                    <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+                    <div style="display: flex; justify-content: space-between; font-size: 14px; color: var(--text-muted); margin-top: 4px;">
                         <span>高品質 (20)</span>
                         <span>高壓縮 (27)</span>
                     </div>
@@ -1866,7 +1870,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <dialog id="subtitlePreviewDialog" class="subtitle-dialog" aria-labelledby="subtitleDialogTitle">
-        <div class="subtitle-dialog-header"><div><h2 id="subtitleDialogTitle">字幕輸出預覽</h2><p>目前投影片與本頁口白 · 1920 × 1080 等比例</p></div><button type="button" class="secondary" id="btnCloseSubtitlePreview" aria-label="關閉字幕預覽">✕</button></div>
+        <div class="subtitle-dialog-header"><div><h2 id="subtitleDialogTitle">畫面與字幕預覽</h2><p>目前投影片與本頁口白 · 1920 × 1080 等比例</p></div><button type="button" class="secondary" id="btnCloseSubtitlePreview" aria-label="關閉字幕預覽">✕</button></div>
         <div class="subtitle-dialog-frame">
             <img class="subtitle-slide-image" alt="目前投影片" hidden>
             <div class="subtitle-canvas"><div class="subtitle-rendered-text"></div></div>
@@ -1874,7 +1878,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="subtitle-dialog-footer">
             <div class="subtitle-cue-controls"><button type="button" class="secondary" data-preview-step="-1" aria-label="上一句字幕">‹</button><span id="subtitleDialogPosition">尚無字幕</span><button type="button" class="secondary" data-preview-step="1" aria-label="下一句字幕">›</button></div>
-            <button type="button" class="primary" id="btnActualSubtitleFrame">檢視 FFmpeg 實際輸出</button>
+            <button type="button" class="primary" id="btnActualSubtitleFrame">檢視 FFmpeg 字幕畫格</button>
         </div>
         <p class="preview-note" id="subtitleActualStatus">等比例排版預覽；實際輸出可確認字型與描邊。此預覽不會儲存設定。</p>
     </dialog>
@@ -1905,6 +1909,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const data = await res.json();
                 if (!res.ok || data.success === false) throw new Error(data.error || '操作失敗');
                 slidesData = data.slides;
+                Studio.init(data);
                 ['btnSaveSlide', 'btnTestTts', 'btnLoadDualSample', 'btnRenderVideo'].forEach(id => {
                     document.getElementById(id).disabled = slidesData.length === 0;
                 });
@@ -1974,8 +1979,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     document.getElementById('pageFontSize').value = chap.font_size || 24;
                     document.getElementById('pageFontSizeVal').textContent = (chap.font_size || 24) + 'px';
                     
-                    document.getElementById('showVersionBadge').checked = chap.show_version_badge !== false;
-                    document.getElementById('versionText').value = chap.version_text || 'SLIDE EDITION v3.0.0 (2026/10/05)';
                 }
 
                 if (data.video_settings) {
@@ -2011,6 +2014,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     document.getElementById('slideTitle').value = '';
                     document.getElementById('slideNarration').value = '';
                 }
+                if (Studio.job.result && !Studio.job.active) Studio.renderEvent(Studio.job.result);
             } catch (err) {
                 console.error("Failed to load slides:", err);
                 document.getElementById('projectName').textContent = '暫時無法載入，請稍後重新整理';
@@ -2034,13 +2038,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 li.className = `slide-item ${idx === currentSlideIdx ? 'active' : ''}`;
                 const fileNum = String(s.num).padStart(2, '0');
                 li.innerHTML = `
-                    <div class="slide-thumb" style="background-image: url('/assets/images/page-${fileNum}.png?t=${new Date().getTime()}')"></div>
+                    <div class="slide-thumb" style="background-image: url('/assets/images/page-${fileNum}.png?v=${s.image_version || '0'}')"></div>
                     <div class="slide-info">
                         <div class="num">PAGE ${fileNum}</div>
                         <div class="title"></div>
                     </div>
                 `;
                 li.querySelector('.title').textContent = s.title;
+                const status = document.createElement('div');
+                status.className = 'slide-state';
+                status.textContent = Studio.status(s);
+                li.querySelector('.slide-info').appendChild(status);
                 li.tabIndex = 0;
                 li.setAttribute('role', 'button');
                 li.setAttribute('aria-label', `第 ${s.num} 頁：${s.title}`);
@@ -2055,18 +2063,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         // Select specific slide to edit
         function selectSlide(idx) {
+            Studio.capture();
             currentSlideIdx = idx;
-            renderSidebar();
+            Studio.selected = idx;
+            document.querySelectorAll('.slide-item').forEach((item, i) => {
+                item.classList.toggle('active', i === idx);
+                item.setAttribute('aria-current', i === idx ? 'true' : 'false');
+            });
             const s = slidesData[idx];
             const fileNum = String(s.num).padStart(2, '0');
             
             document.getElementById('slidePreview').hidden = false;
             document.getElementById('previewEmpty').hidden = true;
             document.getElementById('previewPageLabel').textContent = `投影片 ${fileNum} / ${slidesData.length} 頁`;
-            document.getElementById('slidePreview').src = `/assets/images/page-${fileNum}.png?t=${new Date().getTime()}`;
+            document.getElementById('slidePreview').src = `/assets/images/page-${fileNum}.png?v=${s.image_version || '0'}`;
             document.getElementById('slideNum').value = s.num;
-            document.getElementById('slideTitle').value = s.title;
-            document.getElementById('slideNarration').value = s.narration;
+            const draft = Studio.draft(s);
+            document.getElementById('slideTitle').value = draft.title;
+            document.getElementById('slideNarration').value = draft.narration;
+            Studio.indicator();
             updateNarrationCount();
 
             document.getElementById('audioContainer').style.display = 'none';
@@ -2075,6 +2090,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         // Project upload and initialization handler
         document.getElementById('btnUploadProject').onclick = async () => {
+            Studio.capture();
+            if (!await Studio.saveAll()) return;
             const slideInput = document.getElementById('slidePdfFile');
             const narrationInput = document.getElementById('narrationFile');
 
@@ -2200,33 +2217,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         // Save Slide narration
-        document.getElementById('btnSaveSlide').onclick = async () => {
-            if (slidesData.length === 0) return;
-            const s = slidesData[currentSlideIdx];
-            const payload = {
-                num: s.num,
-                title: document.getElementById('slideTitle').value,
-                narration: document.getElementById('slideNarration').value
-            };
-
-            try {
-                const res = await fetch('/api/save_slide', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const data = await res.json();
-                if (!res.ok || data.success === false) throw new Error(data.error || '操作失敗');
-                if (data.success) {
-                    s.title = payload.title;
-                    s.narration = payload.narration;
-                    renderSidebar();
-                    showToast("口白存檔成功！");
-                }
-            } catch (err) {
-                alert("儲存失敗: " + err);
-            }
-        };
+        document.getElementById('btnSaveSlide').onclick = () => Studio.saveCurrent();
 
         // Test and generate audio for page
         document.getElementById('btnTestTts').onclick = async () => {
@@ -2277,6 +2268,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     document.getElementById('audioDuration').textContent = `旁白長度: ${data.duration} 秒`;
                     audio.play();
                     showToast("配音檔產生成功！");
+                    Studio.refreshStates();
                     window.refreshSubtitlePreview?.();
                 } else {
                     alert("配音失敗: " + data.error);
@@ -2335,8 +2327,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 show_page_number: document.getElementById('showPageNumber').checked,
                 bg_color: document.getElementById('pageBgColor').value,
                 font_size: parseInt(document.getElementById('pageFontSize').value),
-                show_version_badge: document.getElementById('showVersionBadge').checked,
-                version_text: document.getElementById('versionText').value
             };
 
             try {
@@ -2348,7 +2338,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const data = await res.json();
                 if (!res.ok || data.success === false) throw new Error(data.error || '操作失敗');
                 if (data.success) {
-                    showToast("頁面與版本標籤儲存成功！");
+                    showToast("畫面與標籤儲存成功！");
                 }
             } catch (err) {
                 alert("樣式儲存失敗: " + err);
@@ -2356,7 +2346,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         };
 
         // Stream render output logs
-        document.getElementById('btnRenderVideo').onclick = () => {
+        document.getElementById('btnRenderVideo').onclick = async () => {
+            if (!await Studio.saveAll()) return;
             if (slidesData.length === 0) {
                 alert("請先上傳並匯入專案檔案！");
                 return;
@@ -2373,7 +2364,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             playBtn.style.display = 'none';
             playCleanBtn.style.display = 'none';
             progressContainer.style.display = 'block';
-            progressBar.style.width = '10%';
+            progressBar.style.width = '100%';
+            progressContainer.classList.add('indeterminate');
+            Studio.monitor();
 
             const es = new EventSource('/api/render_video' + (document.getElementById('forceTts').checked ? '?force=1' : ''));
             
@@ -2381,13 +2374,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const data = JSON.parse(event.data);
                 if (data.log) {
                     consoleLog.textContent += data.log + '\\n';
+                    if (consoleLog.textContent.length > 24000) consoleLog.textContent = '較早紀錄請查看完整日誌。\\n' + consoleLog.textContent.slice(-20000);
                     consoleLog.scrollTop = consoleLog.scrollHeight;
                     
-                    if (data.log.includes('timings.json')) progressBar.style.width = '30%';
-                    if (data.log.includes('build_index.py')) progressBar.style.width = '45%';
-                    if (data.log.includes('Playwright')) progressBar.style.width = '60%';
-                    if (data.log.includes('muxING')) progressBar.style.width = '85%';
                 }
+                Studio.renderEvent(data);
                 if (data.error) {
                     consoleLog.textContent += `[失敗] ${data.error}\\n`;
                     consoleLog.scrollTop = consoleLog.scrollHeight;
@@ -2398,7 +2389,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     return;
                 }
                 if (data.complete) {
+                    progressContainer.classList.remove('indeterminate');
                     progressBar.style.width = '100%';
+                    Studio.refreshStates();
                     btn.disabled = false;
                     
                     if (data.video_name) {
@@ -2428,6 +2421,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 consoleLog.textContent += "\\n[錯誤] 連線中斷或渲染程序異常終止。\\n";
                 btn.disabled = false;
                 es.close();
+                Studio.disconnected();
             };
         };
 
@@ -2494,6 +2488,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const data = await res.json();
                 if (!res.ok || data.success === false) throw new Error(data.error || '設定儲存失敗');
                 showToast("語音對話設定儲存成功！");
+                Studio.refreshStates();
             } catch (err) {
                 console.error("儲存語音對話設定失敗:", err);
                 showToast("儲存失敗：" + err.message);
@@ -2548,7 +2543,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         function updateNarrationCount() {
             document.getElementById('narrationCount').textContent = `${Array.from(document.getElementById('slideNarration').value).length} 字`;
+            if (typeof Studio !== 'undefined') Studio.capture();
             window.refreshSubtitlePreview?.();
+            window.refreshStageLabels?.();
         }
         document.getElementById('slideNarration').addEventListener('input', updateNarrationCount);
         document.querySelectorAll('.collapsible-card').forEach(card => {
@@ -2556,7 +2553,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         });
         window.onload = loadSlides;
     </script>
+    <script src="/ui/workspace.js"></script>
     <script src="/ui/subtitles.js"></script>
+    <script src="/ui/stage-labels.js"></script>
 </body>
 </html>
 """

@@ -46,7 +46,7 @@
         frameRevision++;
         byId('actualSubtitleFrame').hidden = true;
         byId('actualSubtitleFrame').removeAttribute('src');
-        byId('subtitleActualStatus').textContent = '等比例排版預覽；實際輸出可確認字型與描邊。不含頁碼與角色卡，不會儲存設定。';
+        byId('subtitleActualStatus').textContent = '即時預覽包含頁碼、標題與字幕。FFmpeg 字幕畫格只檢查字幕，不含頁碼與標題；預覽不會儲存設定。';
     }
 
     function paint() {
@@ -165,7 +165,7 @@
             byId('subtitleActualStatus').textContent = error.message;
         } finally {
             actualPending = false;
-            button.textContent = '檢視 FFmpeg 實際輸出';
+            button.textContent = '檢視 FFmpeg 字幕畫格';
             paint();
         }
     });

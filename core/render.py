@@ -4,6 +4,18 @@ import os
 import shutil
 from pathlib import Path
 import sys
+from job_control import child_checkpoint
+
+
+def run_media_step(cmd, **kwargs):
+    child_checkpoint(os.environ.get("RENDER_PAUSE_FILE"))
+    label = "擷取投影片畫面" if str(cmd[0]).lower() == "node" else "合成音訊與影片"
+    if "ass=temp_subtitles.ass" in cmd:
+        label = "壓制影片字幕"
+    print("STAGE:" + label, flush=True)
+    kwargs["stderr"] = None  # Inherit parent's pipe; retain full FFmpeg diagnostics.
+    return subprocess.run(cmd, **kwargs)
+
 from subtitle_styles import ass_header as make_ass_header
 from subtitle_utils import split_timed_text, wrap_ass_lines, ass_text, format_srt_time, format_ass_time
 
@@ -105,7 +117,7 @@ def run_render():
                 if p.get("audio_status") == "estimated":
                     raise RuntimeError(f"第 {i} 頁配音尚未完成，請先生成配音。")
                 cmd_pad = ["ffmpeg", "-y", "-i", str(in_file), "-af", "apad", "-t", str(dur), str(out_file)]
-            subprocess.run(cmd_pad, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run_media_step(cmd_pad, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print(f"  ✓ 填補 page-{i:02d}.mp3 -> {dur} 秒")
             
             f_list.write(f"file 'padded-{i:02d}.mp3'\n")
@@ -119,7 +131,7 @@ def run_render():
         "-i", "concat_list.txt", "-c", "copy",
         "../master_audio.mp3"
     ]
-    subprocess.run(cmd_concat, check=True, cwd=str(tmp_audio_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run_media_step(cmd_concat, check=True, cwd=str(tmp_audio_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"  ✓ 成功合併主音軌：{master_audio}")
     
     # 3. 呼叫 Playwright 進行極速網頁畫面擷取 (Snapshot)
@@ -171,7 +183,7 @@ def run_render():
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     cmd_snapshot = ["node", "snapshot_slides.cjs"]
-    subprocess.run(cmd_snapshot, check=True, env=env, shell=use_shell)
+    run_media_step(cmd_snapshot, check=True, env=env, shell=use_shell)
     print("  ✓ 投影片高畫質畫格擷取完成！")
 
     # 4. 生成 FFmpeg 投影片時間軸 Concat 清單
@@ -267,7 +279,7 @@ def run_render():
         ]
         
         print("  正在極速合成無字幕版影片，請稍候...")
-        subprocess.run(cmd_mux_clean, check=True, cwd=str(renders_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run_media_step(cmd_mux_clean, check=True, cwd=str(renders_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"  ✓ 成功產生無字幕版影片：{output_path_clean}")
 
         # 5.5 產生獨立 SRT 字幕檔案
@@ -292,7 +304,7 @@ def run_render():
                     str(output_path_embed.resolve())
                 ]
                 print("  正在將等比例字幕壓制到影片中，請稍候...")
-                subprocess.run(cmd_burn, check=True, cwd=str(renders_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                run_media_step(cmd_burn, check=True, cwd=str(renders_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print(f"  ✓ 成功產生內嵌字幕版影片：{output_path_embed}")
             except Exception as e:
                 raise RuntimeError(f"壓制內嵌字幕影片失敗: {e}") from e
@@ -327,7 +339,7 @@ def run_render():
             str(output_path.resolve())
         ]
         print("  正在極速合成影片，請稍候...")
-        subprocess.run(cmd_mux, check=True, cwd=str(renders_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run_media_step(cmd_mux, check=True, cwd=str(renders_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"  ✓ 成功產生影片：{output_path}")
 
         print("\n--- 5.5. 產生獨立 SRT 字幕檔案 ---")
@@ -365,7 +377,7 @@ def run_render():
             str(output_path.resolve())
         ]
         print("  正在極速壓制等比例內嵌字幕影片，請稍候...")
-        subprocess.run(cmd_mux, check=True, cwd=str(renders_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run_media_step(cmd_mux, check=True, cwd=str(renders_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"  ✓ 成功產生內嵌字幕影片：{output_path}")
 
         print(f"\n🎉 恭喜！影片製作成功！")
