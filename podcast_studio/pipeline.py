@@ -18,6 +18,8 @@ if sys.platform == "win32":
 
 MODULE_DIR = Path(__file__).parent.resolve()
 ROOT_DIR = MODULE_DIR.parent
+sys.path.insert(0, str(ROOT_DIR))
+from core.subtitle_utils import split_timed_text, wrap_ass_lines, ass_text, format_ass_time
 TEMPLATES_DIR = MODULE_DIR / "templates"
 DEFAULT_ASSETS_DIR = MODULE_DIR / "default_assets"
 PROJECTS_DIR = MODULE_DIR / "projects"
@@ -37,52 +39,6 @@ def parse_srt_time(t_str: str) -> float:
     if not m: return 0.0
     h, m_, s, ms = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)[:3].ljust(3, "0"))
     return h * 3600 + m_ * 60 + s + ms / 1000.0
-
-def format_ass_time(sec: float) -> str:
-    h = int(sec // 3600)
-    m = int((sec % 3600) // 60)
-    s = int(sec % 60)
-    cs = int(round((sec - int(sec)) * 100))
-    if cs >= 100: cs = 99
-    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
-
-def wrap_ass_lines(text: str, max_chars: int = 18) -> str:
-    """智慧折行：每行字數不超過 max_chars，避免橫向超出中央安全區或被主持人卡片遮擋"""
-    if len(text) <= max_chars:
-        return text
-    lines = []
-    rem = text
-    while len(rem) > max_chars:
-        best = -1
-        for i in range(min(max_chars, len(rem)) - 1, 6, -1):
-            if rem[i] in "，、；。？！ ,:：":
-                best = i + 1
-                break
-        if best == -1:
-            best = max_chars
-        lines.append(rem[:best].strip())
-        rem = rem[best:].strip()
-    if rem:
-        lines.append(rem)
-    return r"\N".join(lines)
-
-def split_srt_by_punctuation(text: str, target_len: int = 24) -> list:
-    """依標點符號切分超長語音段落為自然短句，避免單條字幕時長或字數過長導致螢幕溢出截斷"""
-    tokens = [t for t in re.split(r"([。！？!?；;，,、\n])", text) if t]
-    chunks = []
-    curr = ""
-    for i in range(0, len(tokens), 2):
-        t = tokens[i]
-        p = tokens[i+1] if i+1 < len(tokens) else ""
-        phrase = t + p
-        if not phrase.strip(): continue
-        if len(curr) + len(phrase) <= target_len:
-            curr += phrase
-        else:
-            if curr: chunks.append(curr)
-            curr = phrase
-    if curr: chunks.append(curr)
-    return chunks
 
 def prepare_subtitles(proj_dir: Path):
     """讀取 SRT 字幕並轉換為高對比雙色 ASS 字幕 (Alan 明黃色 #FFFF00 / Beth 水藍色 #40A9FF)，具備自動長句切分與智慧折行"""
@@ -134,21 +90,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         style = "HostB" if ("Beth" in raw_text or "嘉賓" in raw_text or "來賓" in raw_text or "B:" in raw_text) else "HostA"
 
-        chunks = split_srt_by_punctuation(body, target_len=26)
-        if not chunks: chunks = [body]
-
-        total_len = sum(len(c) for c in chunks) or 1
-        curr_t = start_sec
-        for idx, chunk in enumerate(chunks):
-            c_dur = dur * (len(chunk) / total_len)
-            s_time = curr_t
-            e_time = curr_t + c_dur if idx < len(chunks) - 1 else end_sec
-            curr_t = e_time
-
-            # 發言者標籤加在該段首句，後續短句顯示純內容，使畫面整潔
-            full_text = f"{spk_tag} {chunk}" if (spk_tag and idx == 0) else chunk
-            wrapped = wrap_ass_lines(full_text, max_chars=18)
-            dialogues.append(f"Dialogue: 0,{format_ass_time(s_time)},{format_ass_time(e_time)},{style},,0,0,0,,{wrapped}")
+        for cue in split_timed_text(body, start_sec, end_sec, prefix=spk_tag):
+            wrapped = wrap_ass_lines(ass_text(cue["text"]))
+            dialogues.append(f"Dialogue: 0,{format_ass_time(cue['start'])},{format_ass_time(cue['end'])},{style},,0,0,0,,{wrapped}")
 
     ass_file.write_text(ass_header + "\n".join(dialogues) + "\n", encoding="utf-8")
     print(f"  ✓ 成功轉換為高對比雙色 ASS 字幕（含長句防截斷處理）：{ass_file.name}")

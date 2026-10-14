@@ -4,7 +4,7 @@
 [![Python Version](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 
-**簡報影片 AI 製作工坊** 是一款輕量、高效且功能齊全的自動化簡報影片生成工具。只需輸入 PDF 簡報與語音腳本，即可快速合成包含高清簡報畫面、高品質語音旁白（支援雙人對話）、動態字幕的高質感影片。
+**簡報影片 AI 製作工坊** 是一款本機影片製作工具。輸入 PDF 簡報與語音腳本後，可合成簡報畫面、語音旁白（支援雙人對話）與字幕。另提供 Podcast 錄音室影片合成流程。
 
 ---
 
@@ -15,7 +15,7 @@
 - 🗣️ **雙人對話式簡報 (Host & Guest)**：支援 `A:` (主持人) 與 `B:` (專家) 發言標籤，一鍵輕鬆打造熱絡對談式的簡報影片。
 - ⏱️ **自動字幕切分與時間軸對齊**：依據標點符號自動分割句構，精確計算語音時長並高亮顯示動態字幕。
 - 🖥️ **直覺式 Web GUI 介面**：提供極致流暢的網頁介面，支援即時語音試聽、對白編輯與預覽。
-- 🎥 **高清影片錄製與合成**：基於 Playwright 自動化瀏覽器畫格擷取與 FFmpeg 音視訊高畫質合成（1080p / 60fps）。
+- 🎥 **高清影片錄製與合成**：使用 Playwright 擷取畫格，再由 FFmpeg 合成影片；簡報流程輸出 30fps，Podcast 流程輸出 25fps。
 
 ---
 
@@ -24,7 +24,7 @@
 在開始安裝前，請確保您的系統已安裝以下軟體環境：
 
 1. **Python 3.9+** (建議 Python 3.10 以上)
-2. **Node.js 18+** (供 Playwright 視訊錄製組件使用)
+2. **Node.js 18+** (供簡報流程的 Playwright 投影片擷取使用)
 3. **FFmpeg & FFprobe** (需設定至系統環境變數 PATH 中)
    - *Windows 建議可使用 `winget install Gyan.FFmpeg` 或由 [FFmpeg 官網](https://ffmpeg.org/) 下載。*
 
@@ -32,31 +32,35 @@
 
 ## 🚀 快速開始 (Quick Start)
 
-### 1. 複製專案庫 (Clone Repository)
+### 1. 安裝 Python 依賴包
 
 ```bash
-git clone https://github.com/your-username/slide-to-video-generator.git
-cd slide-to-video-generator
+python -m pip install -r core/requirements.txt
 ```
 
-### 2. 安裝 Python 依賴包
+若配音出現 HTTP 403，請將 Edge-TTS 更新至 7.3.1 以上（支援新版 v2 驗證），更新後關閉並重新啟動工坊。Windows 使用專案虛擬環境時，在專案根目錄執行：
 
-```bash
-pip install -r requirements.txt
+```powershell
+.\.venv\Scripts\python.exe -m pip install --upgrade -r core/requirements.txt
 ```
 
-### 3. 安裝 Node.js 依賴與 Playwright 瀏覽器
+### 2. 安裝簡報流程的 Node.js 依賴與 Chromium
 
 ```bash
+cd core
 npm install
 npx playwright install chromium
+cd ..
 ```
 
-### 4. 啟動應用程式
+Python 依賴清單包含 Podcast 流程所需的 Playwright。首次使用該流程前，還需執行 `python -m playwright install chromium` 安裝其 Chromium 瀏覽器。
+
+### 3. 啟動應用程式
 
 - **Windows 使用者**：可直接雙擊執行目錄下的 `啟動影片製作工坊.bat`
 - **通用命令列**：
   ```bash
+  cd core
   python app.py
   ```
 
@@ -94,13 +98,10 @@ npx playwright install chromium
 
 ## 🎙️ NotebookLM / 雙人 Podcast 轉虛擬錄音室影片
 
-本專案支援將 Google NotebookLM 或 Gemini 生成的雙人 Podcast 音訊檔，透過極簡 3 步高速流轉換為包含**「兩側主持人偶向內注視 + 中央動態概念插圖 + 高對比雙色字幕」**的高清節目影片！
+本專案可將 Google NotebookLM 或 Gemini 生成的雙人 Podcast 音訊檔，配合預先準備的章節、字幕和概念圖，合成包含**「兩側主持人偶向內注視 + 中央概念插圖 + 高對比雙色字幕」**的高清節目影片。音訊分析、逐字稿與概念圖目前需由 AI Agent 或人工先行準備。
 
 - **音檔放置**：將音檔放入 `sound_source/` 資料夾。
-- **極簡高速流水線**：
-  1. 分析音檔（切分時間軸與雙人字幕）
-  2. 生成適當概念插圖（純視覺高美感 3D 插畫）
-  3. 舞台影格合成＋壓制雙色字幕直出 MP4
+- **影片合成流程**：轉換字幕、擷取舞台畫格，再以 FFmpeg 合成 MP4。
 
 詳情請參閱 [雙人Podcast虛擬錄音室影片製作指南.md](雙人Podcast虛擬錄音室影片製作指南.md)。
 
@@ -111,15 +112,19 @@ npx playwright install chromium
 
 ```text
 .
-├── app.py                     # 後端 HTTP 伺服器 & API 邏輯 (TTS, PDF 轉圖, 設定儲存)
-├── index.html                 # 現代化前端 Web GUI 編輯器
-├── render.py                  # 影片繪製與 FFmpeg 音視訊極速合成處理器
-├── snapshot_slides.cjs        # Playwright 高速投影片畫格擷取腳本
-├── package.json               # Node.js 專案設定檔 (Playwright 依賴)
-├── requirements.txt           # Python 依賴包 (PyMuPDF, edge-tts)
+├── core/
+│   ├── app.py                 # Web GUI 後端 (TTS、PDF 轉圖、設定與輸出)
+│   ├── build_index.py         # 產生投影片影片預覽頁
+│   ├── render.py              # FFmpeg 音訊、畫面與字幕合成
+│   ├── snapshot_slides.cjs    # Node.js Playwright 投影片擷取
+│   ├── package.json           # 簡報流程的 Node.js 依賴
+│   └── requirements.txt       # Python 依賴
+├── podcast_studio/
+│   └── pipeline.py            # Podcast 舞台畫格與影片合成
 ├── 啟動影片製作工坊.bat          # Windows 一鍵啟動批次檔
-├── 雙人對話腳本格式指南.md        # 雙人對話腳本撰寫詳細說明
-├── assets/                    # 靜態資源、生成之圖片與配音音訊檔
+├── docs/                      # 操作、腳本與字幕指南
+├── core/assets/               # PDF 投影片圖像與生成的配音音訊
+├── sound_source/              # Podcast 原始音訊
 └── MovieOutput/               # 最終導出的簡報影片成果目錄
 ```
 
@@ -142,3 +147,10 @@ npx playwright install chromium
 ## 📄 開源授權 (License)
 
 本專案採用 [MIT License](LICENSE) 授權釋出，歡迎自由修改與商業/個人使用。
+
+## 配音快取、靜音頁與字幕預覽
+
+- 製作影片時，未改動口白和聲音設定的頁面會沿用配音；勾選「重新生成全部配音（忽略快取）」可強制重製。
+- 無口白頁會顯示靜音投影片，預設停留 5 秒，可在語音設定調整。
+- 字幕設定中的預覽使用目前投影片與本頁口白，可放大、切換句子，並用「檢視 FFmpeg 實際輸出」產生單張真實字幕畫格，不必先製作完整影片。
+- 詳細修改與驗證範圍見 [程式檢查與改善建議](程式檢查與改善建議.md)。

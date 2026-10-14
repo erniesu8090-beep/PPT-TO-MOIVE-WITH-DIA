@@ -15,6 +15,13 @@ import time
 import base64
 import fitz # PyMuPDF
 import shutil
+import hashlib
+import tempfile
+import threading
+
+from media_utils import get_audio_duration
+from subtitle_styles import ass_header, style_values
+from subtitle_utils import split_timed_text, wrap_ass_lines, ass_text
 
 PORT = 8000
 WORKSPACE_DIR = pathlib.Path(__file__).parent.absolute()
@@ -28,20 +35,21 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
 
-# Helper to read durations using ffprobe
-def get_audio_duration(file_path):
-    cmd = [
-        "ffprobe", "-v", "quiet", "-print_format", "json",
-        "-show_format", "-show_streams", str(file_path)
-    ]
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
-        if res.returncode != 0 or not res.stdout or not res.stdout.strip():
-            return 5.0
-        data = json.loads(res.stdout)
-        return float(data["format"]["duration"])
-    except Exception:
-        return 5.0
+# All HTTP operations that write project files share this lock.
+PROJECT_LOCK = threading.Lock()
+
+
+def clean_narration(text):
+    text = text.strip()
+    return text[1:-1].strip() if text.startswith("「") and text.endswith("」") else text
+
+
+def silent_page_duration(settings):
+    value = float(settings.get("silent_page_duration", 5))
+    if not math.isfinite(value) or not 1 <= value <= 120:
+        raise ValueError("空白頁停留時間必須介於 1 到 120 秒。")
+    return value
+
 
 # Helper to get Git version and update time
 def get_git_info():
@@ -258,6 +266,12 @@ def parse_dialogue_turns(text):
             spk = 'B'
         else:
             spk = 'A'
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        turn_text = text[m.end():end].strip()
+        if turn_text:
+            turns.append({'speaker': spk, 'text': turn_text})
+    return turns
+
 
 def calculate_dynamic_timings():
     cleaned_path = WORKSPACE_DIR / "口白_cleaned.json"
@@ -288,31 +302,26 @@ def calculate_dynamic_timings():
         title = s.get("title", f"第 {num} 頁")
         text = s.get("narration", "")
         
-        text_clean = text
-        if text_clean.startswith("「") and text_clean.endswith("」"):
-            text_clean = text_clean[1:-1]
-            
+        text_clean = clean_narration(text)
         audio_file = OUT_DIR / f"page-{num:02d}.mp3"
-        
-        if audio_file.exists():
-            try:
-                audio_dur = get_audio_duration(audio_file)
-            except Exception:
-                audio_dur = len(text_clean) * 0.15
-        else:
-            audio_dur = len(text_clean) * 0.15
-
         meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
-        turn_durations = []
-        exact_clauses = []
-        if meta_file.exists():
-            try:
-                with open(meta_file, "r", encoding="utf-8") as f_meta:
-                    meta = json.load(f_meta)
-                    turn_durations = meta.get("turn_durations", [])
-                    exact_clauses = meta.get("exact_clauses", [])
-            except Exception:
-                pass
+        turn_durations, exact_clauses = [], []
+        generated = audio_matches_cache(num, text_clean, voice_settings)
+        if not parse_dialogue_turns(text_clean):
+            audio_dur = silent_page_duration(voice_settings)
+            audio_status = "silent"
+        elif generated:
+            audio_dur = get_audio_duration(audio_file)
+            audio_status = "generated"
+            meta = json.loads(meta_file.read_text(encoding='utf-8'))
+            turn_durations = meta.get("turn_durations", [])
+            exact_clauses = meta.get("exact_clauses", [])
+        else:
+            # Estimates are only for editing before synthesis, never for rendering.
+            audio_dur = max(1.0, len(text_clean) * 0.15)
+            audio_status = "estimated"
+        for clause in exact_clauses:
+            clause["speaker_name"] = speaker_b_name if clause.get("speaker") == "B" else speaker_a_name
 
         if exact_clauses:
             all_clauses = exact_clauses
@@ -359,13 +368,31 @@ def calculate_dynamic_timings():
                     })
                     current_time += c_dur
 
-        dur = math.ceil(audio_dur + pad_time)
+        if audio_status == "silent":
+            all_clauses = []
+        else:
+            normalized = []
+            previous_speaker = None
+            for clause in all_clauses:
+                speaker = clause.get("speaker", "A")
+                # Label only the beginning of a speaker's turn.
+                show_label = previous_speaker != speaker
+                for cue in split_timed_text(clause["text"], clause["start"], clause["end"]):
+                    cue.update({"speaker": speaker, "speaker_name": clause.get("speaker_name", ""),
+                                "show_speaker_label": show_label})
+                    show_label = False
+                    normalized.append(cue)
+                previous_speaker = speaker
+            all_clauses = normalized
+        dur = math.ceil(audio_dur if audio_status == "silent" else audio_dur + pad_time)
         
         pages_timings.append({
             "i": num,
             "title": title,
             "sub": text,
             "audio_dur": round(audio_dur, 2),
+            "audio_status": audio_status,
+            "silent": audio_status == "silent",
             "dur": dur,
             "clauses": all_clauses
         })
@@ -382,6 +409,8 @@ def calculate_dynamic_timings():
             "title": p["title"],
             "sub": p["sub"],
             "audio_dur": p["audio_dur"],
+            "audio_status": p["audio_status"],
+            "silent": p["silent"],
             "dur": p["dur"]
         })
     with open(WORKSPACE_DIR / "timings.json", "w", encoding="utf-8") as f_simple:
@@ -389,15 +418,49 @@ def calculate_dynamic_timings():
         
     return pages_timings
 
-# Limit simultaneous pages while keeping per-page files and subtitle offsets.
-TTS_CONCURRENCY = 3
+# Generate one page at a time while keeping per-page files and subtitle offsets.
+TTS_CONCURRENCY = 1
 TTS_REQUEST_TIMEOUT = 180
+TTS_RETRY_DELAYS = [1.5, 3.0]
+
+# Dual endpoints: Bing ReadAloud (legacy) + Edge 155 Cognitive Services (new)
+TTS_LEGACY_WSS_URL = (
+    f"wss://{edge_tts.constants.BASE_URL}/edge/v1?TrustedClientToken={edge_tts.constants.TRUSTED_CLIENT_TOKEN}"
+)
+TTS_NEW_WSS_URL = (
+    "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
+    f"?Ocp-Apim-Subscription-Key={edge_tts.constants.TRUSTED_CLIENT_TOKEN}"
+)
+TTS_ENDPOINTS = [TTS_LEGACY_WSS_URL, TTS_NEW_WSS_URL]
+_current_tts_endpoint_idx = 0
+
+
+def get_tts_endpoints():
+    global _current_tts_endpoint_idx
+    primary = TTS_ENDPOINTS[_current_tts_endpoint_idx]
+    fallback = [ep for i, ep in enumerate(TTS_ENDPOINTS) if i != _current_tts_endpoint_idx]
+    return [primary] + fallback
+
+
+def mark_tts_endpoint_success(endpoint):
+    global _current_tts_endpoint_idx
+    if endpoint in TTS_ENDPOINTS:
+        _current_tts_endpoint_idx = TTS_ENDPOINTS.index(endpoint)
 
 
 async def collect_tts_stream(text, voice, kwargs):
     import aiohttp
 
-    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+    class StreamConnector(aiohttp.TCPConnector):
+        async def close(self):
+            # edge-tts creates an owning ClientSession for each text chunk and
+            # 403 retry. Keep this connector alive until the whole stream ends.
+            pass
+
+        async def close_stream(self):
+            await super().close()
+
+    connector = StreamConnector(resolver=aiohttp.ThreadedResolver())
 
     async def collect():
         communicate = edge_tts.Communicate(text, voice, **kwargs, connector=connector)
@@ -418,19 +481,44 @@ async def collect_tts_stream(text, voice, kwargs):
         return await asyncio.wait_for(collect(), timeout=TTS_REQUEST_TIMEOUT)
     except asyncio.TimeoutError as exc:
         raise RuntimeError(f"Edge-TTS 請求超過 {TTS_REQUEST_TIMEOUT} 秒") from exc
+    except edge_tts.exceptions.NoAudioReceived as exc:
+        raise RuntimeError(
+            f"Edge-TTS 未回傳音訊（音色 {voice}）。"
+            "請稍後重試，或在語音設定中切換其他音色後再生成。"
+        ) from exc
+    except aiohttp.WSServerHandshakeError as exc:
+        if exc.status == 403:
+            raise RuntimeError(
+                f"Edge-TTS 服務拒絕連線（HTTP 403，目前版本 {edge_tts.__version__}）。"
+                "請確認已安裝 edge-tts 7.3.1 以上並重新啟動工坊；"
+                "若已更新，請檢查系統時間、代理伺服器或稍後重試。"
+            ) from exc
+        if exc.status == 429:
+            raise RuntimeError(
+                "Edge-TTS 請求過於頻繁（HTTP 429 頻率限制），系統將自動切換端點或退避重試。"
+            ) from exc
+        if exc.status in (500, 502, 503, 504):
+            raise RuntimeError(
+                f"Edge-TTS 服務伺服器忙碌（HTTP {exc.status}），微軟伺服器負載過高，系統將自動重試。"
+            ) from exc
+        raise
     finally:
-        await connector.close()
+        await connector.close_stream()
 
 
-async def generate_batch_tts(slides, voice_settings, log):
+async def generate_batch_tts(slides, voice_settings, log, *, force=False):
     semaphore = asyncio.Semaphore(TTS_CONCURRENCY)
 
     async def generate(slide, text):
         num = slide["num"]
         async with semaphore:
-            log(f"  正在產生第 {num} 頁配音...")
             try:
-                await generate_page_tts(num, text, voice_settings)
+                cached = not force and await asyncio.to_thread(audio_matches_cache, num, text, voice_settings)
+                log(f"  第 {num} 頁：" + ("沿用配音快取" if cached else "產生配音" if tts_plan(text, voice_settings)["mode"] != "silent" else "產生靜音頁"))
+                if force:
+                    await generate_page_tts(num, text, voice_settings, force=True)
+                else:
+                    await generate_page_tts(num, text, voice_settings)
             except Exception as exc:
                 log(f"  ❌ 第 {num} 頁配音失敗：{exc}")
                 return num
@@ -439,11 +527,8 @@ async def generate_batch_tts(slides, voice_settings, log):
 
     jobs = []
     for slide in slides:
-        text = slide.get("narration", "")
-        if text.startswith("「") and text.endswith("」"):
-            text = text[1:-1]
-        if text.strip():
-            jobs.append(generate(slide, text))
+        text = clean_narration(slide.get("narration", ""))
+        jobs.append(generate(slide, text))
     results = await asyncio.gather(*jobs)
     failed = [str(num) for num in results if num is not None]
     if failed:
@@ -455,204 +540,195 @@ async def generate_tts(num, text, voice="zh-TW-YunJheNeural", rate="-5%", pitch=
     vs = {"mode": "single", "voice": voice, "rate": rate, "pitch": pitch}
     return await generate_page_tts(num, text, vs)
 
-async def generate_page_tts(num, text, vs):
-    out_file = OUT_DIR / f"page-{num:02d}.mp3"
-    proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("http_proxy") or os.environ.get("https_proxy") or None
-
-    mode = vs.get("mode", "single")
-    speaker_a = vs.get("speaker_a", {
-        "name": "主持人 A",
-        "voice": vs.get("voice", "zh-TW-YunJheNeural"),
-        "rate": vs.get("rate", "-5%"),
-        "pitch": vs.get("pitch", "-2Hz")
-    })
-    speaker_b = vs.get("speaker_b", {
-        "name": "對談者 B",
-        "voice": "zh-TW-HsiaoChenNeural",
-        "rate": vs.get("rate", "-5%"),
-        "pitch": vs.get("pitch", "-2Hz")
-    })
-
+def tts_plan(text, settings):
+    text = clean_narration(text)
     turns = parse_dialogue_turns(text)
+    if not turns:
+        return {"mode": "silent", "duration": silent_page_duration(settings), "turns": []}
+    dual = settings.get("mode") == "dual" or any(t["speaker"] == "B" for t in turns)
 
-    def norm_param(val, default):
-        v = str(val if val is not None else default).strip()
-        if not v or v in ["0", "0%", "+0%", "-0%", "0Hz", "+0Hz", "-0Hz"]:
-            return None
-        if not v.startswith("+") and not v.startswith("-"):
-            v = "+" + v
-        return v
+    def config(source, default_voice):
+        def normalized(key, default):
+            value = str(source.get(key, default)).strip()
+            if value in ("", "0", "0%", "+0%", "-0%", "0Hz", "+0Hz", "-0Hz"):
+                return None
+            return value if value.startswith(("+", "-")) else "+" + value
+        return {"voice": source.get("voice", default_voice),
+                "rate": normalized("rate", "-5%"), "pitch": normalized("pitch", "-2Hz")}
 
-    meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
-    if meta_file.exists():
-        try: meta_file.unlink()
-        except Exception: pass
-
-    if mode == "dual" or (len(turns) > 1 and any(t["speaker"] == "B" for t in turns)):
-        turn_files = []
-        turn_durations = []
-        all_exact_clauses = []
-        current_turn_offset = 0.0
-
-        for idx, turn in enumerate(turns):
-            spk = turn["speaker"]
-            spk_cfg = speaker_a if spk == "A" else speaker_b
-            voice = spk_cfg.get("voice", "zh-TW-YunJheNeural" if spk == "A" else "zh-TW-HsiaoChenNeural")
-            rate = norm_param(spk_cfg.get("rate"), "-5%")
-            pitch = norm_param(spk_cfg.get("pitch"), "-2Hz")
-            spk_name = speaker_a.get("name", "主持人 A") if spk == "A" else speaker_b.get("name", "對談者 B")
-
-            turn_file = OUT_DIR / f"page-{num:02d}-turn-{idx:02d}.mp3"
-            for attempt in range(3):
-                try:
-                    kwargs = {}
-                    if attempt < 2:
-                        if rate: kwargs["rate"] = rate
-                        if pitch: kwargs["pitch"] = pitch
-                    if proxy:
-                        kwargs["proxy"] = proxy
-                    audio_bytes, sentence_boundaries = await collect_tts_stream(turn["text"], voice, kwargs)
-
-                    with open(turn_file, "wb") as f_tf:
-                        f_tf.write(audio_bytes)
-                    turn_files.append(turn_file)
-
-                    t_dur = await asyncio.to_thread(get_audio_duration, turn_file)
-                    turn_durations.append(t_dur)
-
-                    if sentence_boundaries:
-                        for sb in sentence_boundaries:
-                            s_text = sb["text"]
-                            s_start = current_turn_offset + sb["start"]
-                            s_end = current_turn_offset + sb["end"]
-                            s_dur = s_end - s_start
-
-                            sub_clauses = re.findall(r'[^，。；：？！、\s]+[，。；：？！、\s]*', s_text)
-                            sub_clauses = [c.strip() for c in sub_clauses if c.strip()]
-                            if not sub_clauses:
-                                sub_clauses = [s_text]
-
-                            total_chars = sum(len(c) for c in sub_clauses) or 1
-                            curr_t = s_start
-                            for idx_c, c in enumerate(sub_clauses):
-                                if idx_c == len(sub_clauses) - 1:
-                                    c_end = s_end
-                                else:
-                                    c_dur = s_dur * (len(c) / total_chars)
-                                    c_end = curr_t + c_dur
-
-                                all_exact_clauses.append({
-                                    "text": c,
-                                    "start": round(curr_t, 2),
-                                    "end": round(c_end, 2),
-                                    "speaker": spk,
-                                    "speaker_name": spk_name
-                                })
-                                curr_t = c_end
-                    current_turn_offset += t_dur
-                    break
-                except Exception as e:
-                    if attempt == 2:
-                        raise e
-                    await asyncio.sleep(1.5)
-
-        try:
-            with open(meta_file, "w", encoding="utf-8") as f_m:
-                json.dump({
-                    "mode": "dual",
-                    "turn_durations": turn_durations,
-                    "exact_clauses": all_exact_clauses
-                }, f_m, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-
-        if len(turn_files) == 1:
-            if out_file.exists():
-                try: out_file.unlink()
-                except Exception: pass
-            shutil.move(str(turn_files[0]), str(out_file))
-        elif len(turn_files) > 1:
-            concat_txt = OUT_DIR / f"page-{num:02d}-concat.txt"
-            with open(concat_txt, "w", encoding="utf-8") as f_c:
-                for tf in turn_files:
-                    f_c.write(f"file '{tf.name}'\n")
-            
-            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_txt), "-c:a", "libmp3lame", str(out_file)]
-            await asyncio.to_thread(subprocess.run, cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-
-            for tf in turn_files:
-                try: tf.unlink()
-                except Exception: pass
-            try: concat_txt.unlink()
-            except Exception: pass
-
-        return out_file
+    if dual:
+        speaker_a = settings.get("speaker_a", settings)
+        speaker_b = settings.get("speaker_b", {"rate": settings.get("rate", "-5%"), "pitch": settings.get("pitch", "-2Hz")})
+        planned = [{**turn, **config(speaker_b if turn["speaker"] == "B" else speaker_a,
+                    "zh-TW-HsiaoChenNeural" if turn["speaker"] == "B" else "zh-TW-YunJheNeural")} for turn in turns]
     else:
-        voice = vs.get("voice", "zh-TW-YunJheNeural")
-        rate = norm_param(vs.get("rate"), "-5%")
-        pitch = norm_param(vs.get("pitch"), "-2Hz")
-        spk_a_name = speaker_a.get("name", "主持人 A")
+        planned = [{"speaker": "A", "text": " ".join(t["text"] for t in turns), **config(settings, "zh-TW-YunJheNeural")}]
+    return {"mode": "dual" if dual else "single", "turns": planned}
 
-        for attempt in range(3):
-            try:
-                kwargs = {}
-                if attempt < 2:
-                    if rate: kwargs["rate"] = rate
-                    if pitch: kwargs["pitch"] = pitch
+
+def tts_cache_key(text, settings):
+    payload = {"version": 1, "edge_tts": edge_tts.__version__, "plan": tts_plan(text, settings)}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def audio_matches_cache(num, text, settings):
+    audio = OUT_DIR / f"page-{num:02d}.mp3"
+    meta_path = OUT_DIR / f"page-{num:02d}-meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding='utf-8'))
+        return (meta.get('cache_key') == tts_cache_key(text, settings)
+                and audio.is_file() and audio.stat().st_size > 0
+                and meta.get('audio_sha256') == hashlib.sha256(audio.read_bytes()).hexdigest())
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+async def generate_page_tts(num, text, vs, *, force=False):
+    text = clean_narration(text)
+    plan = tts_plan(text, vs)
+    out_file = OUT_DIR / f"page-{num:02d}.mp3"
+    meta_file = OUT_DIR / f"page-{num:02d}-meta.json"
+    if not force and await asyncio.to_thread(audio_matches_cache, num, text, vs):
+        await asyncio.to_thread(get_audio_duration, out_file)
+        return out_file
+    proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("http_proxy") or os.environ.get("https_proxy")
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Work in isolation. Failed requests never overwrite a previous good page.
+    with tempfile.TemporaryDirectory(prefix=f"page-{num:02d}-", dir=OUT_DIR) as tmp:
+        staging = pathlib.Path(tmp)
+        staged_audio = staging / out_file.name
+        meta = {"mode": plan["mode"], "turn_durations": [], "exact_clauses": []}
+        if plan["mode"] == "silent":
+            cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                   "-t", str(plan["duration"]), "-c:a", "libmp3lame", str(staged_audio)]
+            await asyncio.to_thread(subprocess.run, cmd, check=True, capture_output=True, timeout=60)
+        else:
+            turn_files, offset = [], 0.0
+            for idx, turn in enumerate(plan["turns"]):
+                kwargs = {k: turn[k] for k in ("rate", "pitch") if turn[k] is not None}
                 if proxy:
                     kwargs["proxy"] = proxy
-                audio_bytes, sentence_boundaries = await collect_tts_stream(text, voice, kwargs)
+                audio, boundaries = None, None
+                last_exc = None
+                max_attempts = len(TTS_RETRY_DELAYS) + 1
+                for attempt in range(max_attempts):
+                    endpoints = get_tts_endpoints()
+                    for ep in endpoints:
+                        orig_url = getattr(edge_tts.communicate, "WSS_URL", None)
+                        try:
+                            edge_tts.communicate.WSS_URL = ep
+                            audio, boundaries = await collect_tts_stream(turn["text"], turn["voice"], kwargs)
+                            if audio:
+                                mark_tts_endpoint_success(ep)
+                                last_exc = None
+                                break
+                        except Exception as exc:
+                            last_exc = exc
+                            continue
+                        finally:
+                            if orig_url:
+                                edge_tts.communicate.WSS_URL = orig_url
 
-                with open(out_file, "wb") as f_out:
-                    f_out.write(audio_bytes)
+                    if audio:
+                        break
 
-                exact_clauses = []
-                if sentence_boundaries:
-                    for sb in sentence_boundaries:
-                        s_text = sb["text"]
-                        s_start = sb["start"]
-                        s_end = sb["end"]
-                        s_dur = s_end - s_start
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(TTS_RETRY_DELAYS[attempt])
 
-                        sub_clauses = re.findall(r'[^，。；：？！、\s]+[，。；：？！、\s]*', s_text)
-                        sub_clauses = [c.strip() for c in sub_clauses if c.strip()]
-                        if not sub_clauses:
-                            sub_clauses = [s_text]
+                if not audio:
+                    if last_exc:
+                        raise last_exc
+                    raise RuntimeError("Edge-TTS 未回傳音訊。")
+                turn_file = staging / f"turn-{idx:02d}.mp3"
+                turn_file.write_bytes(audio)
+                duration = await asyncio.to_thread(get_audio_duration, turn_file)
+                turn_files.append(turn_file)
+                meta["turn_durations"].append(duration)
+                # No boundary metadata: retain per-turn timing as an explicit estimate.
+                for boundary in boundaries or [{"text": turn["text"], "start": 0, "end": duration}]:
+                    for cue in split_timed_text(boundary["text"], offset + boundary["start"],
+                                                offset + min(boundary["end"], duration)):
+                        cue.update({"speaker": turn["speaker"]})
+                        meta["exact_clauses"].append(cue)
+                offset += duration
+            if len(turn_files) == 1:
+                os.replace(turn_files[0], staged_audio)
+            else:
+                concat_file = staging / "concat.txt"
+                concat_file.write_text(''.join(f"file '{f.name}'\n" for f in turn_files), encoding='utf-8')
+                await asyncio.to_thread(subprocess.run,
+                    ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
+                     "-c:a", "libmp3lame", str(staged_audio)], check=True, capture_output=True, timeout=120)
+        duration = await asyncio.to_thread(get_audio_duration, staged_audio)
+        meta.update({"cache_key": tts_cache_key(text, vs), "audio_duration": duration,
+                     "audio_sha256": hashlib.sha256(staged_audio.read_bytes()).hexdigest()})
+        staged_meta = staging / meta_file.name
+        staged_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+        os.replace(staged_audio, out_file)
+        os.replace(staged_meta, meta_file)
+    return out_file
 
-                        total_chars = sum(len(c) for c in sub_clauses) or 1
-                        curr_t = s_start
-                        for idx_c, c in enumerate(sub_clauses):
-                            if idx_c == len(sub_clauses) - 1:
-                                c_end = s_end
-                            else:
-                                c_dur = s_dur * (len(c) / total_chars)
-                                c_end = curr_t + c_dur
 
-                            exact_clauses.append({
-                                "text": c,
-                                "start": round(curr_t, 2),
-                                "end": round(c_end, 2),
-                                "speaker": "A",
-                                "speaker_name": spk_a_name
-                            })
-                            curr_t = c_end
+def subtitle_preview(payload, *, allow_cache=True):
+    text = clean_narration(payload.get("narration", ""))
+    settings = payload.get("voice_settings", {})
+    plan = tts_plan(text, settings)
+    cues, cursor = [], 0.0
+    num = int(payload.get("num", 0))
+    cached = allow_cache and audio_matches_cache(num, text, settings)
+    if cached:
+        raw = json.loads((OUT_DIR / f"page-{num:02d}-meta.json").read_text(encoding='utf-8')).get("exact_clauses", [])
+    else:
+        raw = []
+        for turn in plan["turns"]:
+            duration = max(1.0, len(turn["text"]) * .15)
+            raw.append({"text": turn["text"], "speaker": turn["speaker"], "start": cursor, "end": cursor + duration})
+            cursor += duration
+    previous_speaker = None
+    for clause in raw:
+        speaker = clause.get("speaker", "A")
+        name = settings.get("speaker_b" if speaker == "B" else "speaker_a", {}).get("name", "對談者 B" if speaker == "B" else "主持人 A")
+        prefix = f"[{name}]" if plan["mode"] == "dual" and previous_speaker != speaker else ""
+        for cue in split_timed_text(clause["text"], clause["start"], clause["end"], prefix=prefix):
+            cue["text"] = wrap_ass_lines(ass_text(cue["text"])).replace(r"\N", "\n")
+            cue["speaker"] = speaker
+            cues.append(cue)
+        previous_speaker = speaker
+    return {"cues": cues, "estimated": not cached, "silent": plan["mode"] == "silent", "dual": plan["mode"] == "dual",
+            "style": style_values(payload.get("subtitle_settings", {}))}
 
-                try:
-                    with open(meta_file, "w", encoding="utf-8") as f_m:
-                        json.dump({
-                            "mode": "single",
-                            "exact_clauses": exact_clauses
-                        }, f_m, ensure_ascii=False, indent=2)
-                except Exception:
-                    pass
 
-                return out_file
-            except Exception as e:
-                if attempt == 2:
-                    raise e
-                await asyncio.sleep(1.5)
-                await asyncio.sleep(1)
-        return out_file
+def actual_subtitle_frame(payload):
+    preview = subtitle_preview(payload)
+    image = WORKSPACE_DIR / "assets" / "images" / f"page-{int(payload.get('num', 0)):02d}.png"
+    if not image.is_file():
+        raise RuntimeError("找不到目前投影片圖片，請先匯入專案。")
+    cues = preview["cues"]
+    index = max(0, min(int(payload.get("cue_index", 0)), len(cues) - 1))
+    events = ""
+    if cues:
+        cue = cues[index]
+        style = ("SpeakerB" if cue["speaker"] == "B" else "SpeakerA") if preview["dual"] else "Default"
+        text = cue["text"].replace("\n", r"\N")
+        events = f"Dialogue: 0,0:00:00.00,0:00:02.00,{style},,0,0,0,,{text}\n"
+    with tempfile.TemporaryDirectory(prefix="subtitle-preview-") as tmp:
+        temp = pathlib.Path(tmp)
+        (temp / "preview.ass").write_text(ass_header(payload.get("subtitle_settings", {}), payload.get("voice_settings", {})) + events, encoding='utf-8')
+        frame = temp / "frame.png"
+        try:
+            subprocess.run(["ffmpeg", "-y", "-i", str(image), "-vf",
+                "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,ass=preview.ass",
+                "-frames:v", "1", str(frame)], cwd=temp, capture_output=True, check=True, timeout=30)
+        except FileNotFoundError as exc:
+            raise RuntimeError("找不到 FFmpeg，請安裝並加入 PATH。") from exc
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or b'').decode('utf-8', errors='replace')[-800:]
+            raise RuntimeError("字幕實際預覽失敗：" + detail) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("字幕實際預覽逾時，請稍後重試。") from exc
+        return {"image": "data:image/png;base64," + base64.b64encode(frame.read_bytes()).decode('ascii')}
+
+
 
 class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -665,7 +741,38 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header('Expires', '0')
         super().end_headers()
 
+    def send_json(self, payload, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+        self.close_connection = True
+
     def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path not in ("/api/render_video", "/api/slides"):
+            return self._do_GET()
+        if not PROJECT_LOCK.acquire(blocking=False):
+            message = "目前正在處理專案，請等作業完成後再操作。"
+            if path == "/api/render_video":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(f"data: {json.dumps({'error': message}, ensure_ascii=False)}\n\n".encode('utf-8'))
+                self.close_connection = True
+            else:
+                self.send_json({"success": False, "error": message}, 409)
+            return
+        try:
+            self._do_GET()
+        except (RuntimeError, ValueError) as exc:
+            self.send_json({"success": False, "error": str(exc)}, 400)
+        finally:
+            PROJECT_LOCK.release()
+
+    def _do_GET(self):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
 
@@ -731,16 +838,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 
                 if mutated:
                     data.sort(key=lambda x: x["num"])
-                    with open(cleaned_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    
-                    # Recalculate and rebuild index.html
-                    calculate_dynamic_timings()
-                    try:
-                        subprocess.run([sys.executable, "build_index.py"], cwd=str(WORKSPACE_DIR), capture_output=True)
-                    except Exception:
-                        pass
-            
+
             # Fetch voice settings
             voice_settings = {
                 "mode": "single",
@@ -845,12 +943,21 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
+            self.send_header("Connection", "close")
             self.end_headers()
             
+            connected = True
+            def emit_sse(payload):
+                nonlocal connected
+                if connected:
+                    try:
+                        self.wfile.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode('utf-8'))
+                        self.wfile.flush()
+                    except OSError:
+                        connected = False
+
             def log_sse(msg):
-                self.wfile.write(f"data: {json.dumps({'log': msg}, ensure_ascii=False)}\n\n".encode('utf-8'))
-                self.wfile.flush()
+                emit_sse({"log": msg})
 
             try:
                 # 1. Generate/regenerate TTS for all slides
@@ -880,7 +987,13 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     slides = []
                     
                 log_sse(f"  批次生成配音，最多同時處理 {TTS_CONCURRENCY} 頁")
-                asyncio.run(generate_batch_tts(slides, voice_settings, log_sse))
+                force = urllib.parse.parse_qs(parsed_url.query).get("force", ["0"])[0] == "1"
+                if not slides:
+                    raise RuntimeError("沒有投影片，請先匯入專案。")
+                if force:
+                    asyncio.run(generate_batch_tts(slides, voice_settings, log_sse, force=True))
+                else:
+                    asyncio.run(generate_batch_tts(slides, voice_settings, log_sse))
                 log_sse("✓ 所有投影片配音產生完畢！")
 
                 log_sse("\n--- [2/4] 開始重新計算與儲存分頁時序 ---")
@@ -900,8 +1013,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     log_sse(f"  [編譯] {line.strip()}")
                 build_proc.wait()
                 if build_proc.returncode != 0:
-                    log_sse("❌ 編譯 index.html 失敗！")
-                    return
+                    raise RuntimeError("編譯 index.html 失敗，已停止影片製作。")
                 log_sse("✓ index.html 編譯完成！")
                 
                 # Read CRF from video_settings.json
@@ -944,24 +1056,14 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 render_proc.wait()
                 
                 if render_proc.returncode != 0:
-                    log_sse("❌ 影片渲染壓制失敗！請檢查背景進程。")
+                    raise RuntimeError("影片渲染壓制失敗，請查看上方日誌。")
                 else:
                     if not final_video_name:
-                        base_stem = "《企業朝廷生存指南》"
-                        project_info_path = WORKSPACE_DIR / "project_info.json"
-                        if project_info_path.exists():
-                            try:
-                                with open(project_info_path, "r", encoding="utf-8") as f_pi:
-                                    info = json.load(f_pi)
-                                    pdf_name = info.get("slide_pdf_name")
-                                    if pdf_name:
-                                        base_stem = pathlib.Path(pdf_name).stem
-                            except Exception:
-                                pass
-                        final_video_name = f"{base_stem}_內嵌字幕.mp4"
-                        clean_video_name = f"{base_stem}_無字幕.mp4"
-                        srt_filename = f"{base_stem}.srt"
-                            
+                        raise RuntimeError("渲染程式未回報影片檔名，無法確認輸出完成。")
+                    for output_name in (final_video_name, clean_video_name, srt_filename):
+                        if output_name and not (MOVIE_OUTPUT_DIR / output_name).is_file():
+                            raise RuntimeError(f"找不到預期的輸出檔案：{output_name}")
+
                     log_sse("\n🎉 恭喜！影片全部製作成功！")
                     if final_video_name:
                         log_sse(f"  已輸出影片：{MOVIE_OUTPUT_DIR / final_video_name}")
@@ -970,15 +1072,31 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     if srt_filename:
                         log_sse(f"  已輸出字幕檔案：{MOVIE_OUTPUT_DIR / srt_filename}")
                     
-                    self.wfile.write(f"data: {json.dumps({'complete': True, 'video_name': final_video_name or '', 'clean_video_name': clean_video_name or '', 'srt_name': srt_filename or ''}, ensure_ascii=False)}\n\n".encode('utf-8'))
-                    self.wfile.flush()
+                    emit_sse({'complete': True, 'video_name': final_video_name or '', 'clean_video_name': clean_video_name or '', 'srt_name': srt_filename or ''})
             except Exception as e:
                 log_sse(f"錯誤: {str(e)}")
+                emit_sse({'error': str(e)})
+            finally:
+                self.close_connection = True
             return
             
         return super().do_GET()
 
     def do_POST(self):
+        preview_only = urllib.parse.urlparse(self.path).path == "/api/subtitle_preview"
+        locked = not preview_only
+        if locked and not PROJECT_LOCK.acquire(blocking=False):
+            self.send_json({"success": False, "error": "目前正在處理專案，請等作業完成後再操作。"}, 409)
+            return
+        try:
+            self._do_POST()
+        except (RuntimeError, ValueError, KeyError, TypeError, OSError) as exc:
+            self.send_json({"success": False, "error": str(exc)}, 400)
+        finally:
+            if locked:
+                PROJECT_LOCK.release()
+
+    def _do_POST(self):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
         
@@ -1000,6 +1118,20 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         payload = json.loads(post_data.decode('utf-8'))
         print("[DEBUG] JSON 解析成功，開始路由處理。", flush=True)
         
+        if path == "/api/subtitle_frame":
+            self.send_json(actual_subtitle_frame(payload))
+            return
+
+        if path == "/api/subtitle_preview":
+            preview_locked = PROJECT_LOCK.acquire(blocking=False)
+            try:
+                # Rendering may publish audio files; avoid reading them mid-replace.
+                self.send_json(subtitle_preview(payload, allow_cache=preview_locked))
+            finally:
+                if preview_locked:
+                    PROJECT_LOCK.release()
+            return
+
         if path == "/api/save_slide":
             num = int(payload["num"])
             title = payload["title"]
@@ -1059,6 +1191,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             if "rate" in payload: voice_settings["rate"] = payload["rate"]
             if "pitch" in payload: voice_settings["pitch"] = payload["pitch"]
             if "pad_time" in payload: voice_settings["pad_time"] = float(payload["pad_time"])
+            if "silent_page_duration" in payload: voice_settings["silent_page_duration"] = silent_page_duration(payload)
             if "speaker_a" in payload: voice_settings["speaker_a"] = payload["speaker_a"]
             if "speaker_b" in payload: voice_settings["speaker_b"] = payload["speaker_b"]
 
@@ -1067,7 +1200,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 text_clean = text_clean[1:-1]
                 
             try:
-                audio_file = asyncio.run(generate_page_tts(num, text_clean, voice_settings))
+                audio_file = asyncio.run(generate_page_tts(num, text_clean, voice_settings, force=bool(payload.get("force", False))))
                 
                 dur_seconds = get_audio_duration(audio_file)
                 calculate_dynamic_timings()
@@ -1095,6 +1228,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             rate = payload.get("rate", "-5%")
             pitch = payload.get("pitch", "-2Hz")
             pad_time = float(payload.get("pad_time", 1.5))
+            silent_duration = silent_page_duration(payload)
             
             speaker_a = payload.get("speaker_a", {
                 "name": "主持人 A",
@@ -1117,6 +1251,7 @@ class GUIHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 "rate": rate,
                 "pitch": pitch,
                 "pad_time": pad_time,
+                "silent_page_duration": silent_duration,
                 "speaker_a": speaker_a,
                 "speaker_b": speaker_b
             }
@@ -1221,523 +1356,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>簡報影片 AI 製作工坊 (Traditional Chinese GUI)</title>
-    <style>
-        :root {
-            --bg-color: #0d0b18;
-            --card-bg: rgba(22, 19, 43, 0.65);
-            --border-color: rgba(255, 255, 255, 0.08);
-            --text-color: #f1f0f7;
-            --text-muted: rgba(241, 240, 247, 0.6);
-            --accent-color: #06b6d4; /* Neon Cyan */
-            --accent-purple: #8b5cf6; /* Violet */
-            --success-color: #10b981;
-            --btn-hover: rgba(6, 182, 212, 0.15);
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            background-color: var(--bg-color);
-            background-image: radial-gradient(circle at 20% 30%, rgba(139, 92, 246, 0.15) 0%, transparent 40%),
-                              radial-gradient(circle at 80% 70%, rgba(6, 182, 212, 0.15) 0%, transparent 40%);
-            color: var(--text-color);
-            font-family: 'PingFang TC', 'Microsoft JhengHei', sans-serif;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        header {
-            background: rgba(13, 11, 24, 0.85);
-            backdrop-filter: blur(12px);
-            border-bottom: 1px solid var(--border-color);
-            padding: 15px 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            z-index: 10;
-        }
-
-        header h1 {
-            font-size: 22px;
-            font-weight: 700;
-            letter-spacing: 1px;
-            background: linear-gradient(to right, #06b6d4, #8b5cf6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .container {
-            display: flex;
-            flex: 1;
-            overflow: hidden;
-        }
-
-        /* Left column: Slide selector */
-        .sidebar {
-            width: 320px;
-            background: rgba(18, 15, 36, 0.45);
-            border-right: 1px solid var(--border-color);
-            display: flex;
-            flex-direction: column;
-            overflow-y: auto;
-        }
-
-        .sidebar-header {
-            padding: 15px 20px;
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-muted);
-            border-bottom: 1px solid var(--border-color);
-            letter-spacing: 0.5px;
-        }
-
-        .slide-list {
-            list-style: none;
-            padding: 10px;
-        }
-
-        .slide-item {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 10px;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            margin-bottom: 8px;
-            border: 1px solid transparent;
-        }
-
-        .slide-item:hover {
-            background: rgba(255, 255, 255, 0.04);
-            border-color: rgba(255, 255, 255, 0.05);
-        }
-
-        .slide-item.active {
-            background: rgba(6, 182, 212, 0.08);
-            border-color: rgba(6, 182, 212, 0.3);
-        }
-
-        .slide-thumb {
-            width: 70px;
-            height: 40px;
-            border-radius: 4px;
-            background-size: cover;
-            background-position: center;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            flex-shrink: 0;
-            background-color: #121020;
-        }
-
-        .slide-info {
-            overflow: hidden;
-        }
-
-        .slide-info .num {
-            font-size: 11px;
-            font-weight: 700;
-            color: var(--accent-color);
-            text-transform: uppercase;
-        }
-
-        .slide-info .title {
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text-color);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        /* Center column: Editor */
-        .main-editor {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow-y: auto;
-            padding: 30px;
-            gap: 24px;
-        }
-
-        .card {
-            background: var(--card-bg);
-            backdrop-filter: blur(16px);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 24px;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
-            flex-shrink: 0;
-        }
-
-        .card.collapsible-card {
-            padding: 0;
-            overflow: hidden;
-            margin-bottom: 20px;
-        }
-
-        .collapsible-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 16px 20px;
-            cursor: pointer;
-            user-select: none;
-            background: rgba(255, 255, 255, 0.02);
-            border-bottom: 1px solid transparent;
-            transition: background 0.2s ease, border-color 0.2s ease;
-        }
-
-        .collapsible-header:hover {
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        .collapsible-header .title-text {
-            font-size: 15px;
-            font-weight: 600;
-            color: var(--text-color);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .collapsible-header .arrow-icon {
-            font-size: 12px;
-            color: var(--text-muted);
-            transition: transform 0.3s ease;
-        }
-
-        .collapsible-content {
-            max-height: 0;
-            overflow: hidden;
-            transition: max-height 0.3s ease-out, padding 0.3s ease;
-            padding: 0 20px;
-        }
-
-        .collapsible-card.active .collapsible-header {
-            border-color: var(--border-color);
-        }
-
-        .collapsible-card.active .collapsible-content {
-            max-height: 600px;
-            padding: 16px 20px 20px 20px;
-            overflow-y: visible;
-        }
-
-        .collapsible-card.active .arrow-icon {
-            transform: rotate(180deg);
-        }
-
-        .preview-container {
-            width: 100%;
-            aspect-ratio: 16/9;
-            background: #000;
-            border-radius: 8px;
-            overflow: hidden;
-            position: relative;
-            border: 1px solid var(--border-color);
-        }
-
-        .preview-img {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-
-        .editor-form {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        .form-row {
-            display: flex;
-            gap: 16px;
-        }
-
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            flex: 1;
-        }
-
-        label {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-muted);
-        }
-
-        input[type="text"], textarea, select {
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            padding: 10px 12px;
-            color: var(--text-color);
-            font-size: 14px;
-            transition: all 0.2s ease;
-        }
-
-        input[type="text"]:focus, textarea:focus, select:focus {
-            outline: none;
-            border-color: var(--accent-color);
-            box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.15);
-        }
-
-        textarea {
-            resize: vertical;
-            min-height: 100px;
-            font-family: inherit;
-            line-height: 1.5;
-        }
-
-        .button-group {
-            display: flex;
-            gap: 12px;
-            justify-content: flex-end;
-            margin-top: 8px;
-        }
-
-        button {
-            padding: 10px 20px;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            border: 1px solid transparent;
-        }
-
-        button.primary {
-            background: linear-gradient(135deg, var(--accent-color), #0891b2);
-            color: #0d0b18;
-        }
-
-        button.primary:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3);
-        }
-
-        button.secondary {
-            background: rgba(255, 255, 255, 0.05);
-            border-color: var(--border-color);
-            color: var(--text-color);
-        }
-
-        button.secondary:hover {
-            background: rgba(255, 255, 255, 0.08);
-        }
-
-        /* Right column: Settings & Compile Control */
-        .right-panel {
-            width: 380px;
-            border-left: 1px solid var(--border-color);
-            background: rgba(18, 15, 36, 0.45);
-            display: flex;
-            flex-direction: column;
-            overflow-y: auto;
-            padding: 24px;
-            gap: 24px;
-        }
-
-        .section-title {
-            font-size: 15px;
-            font-weight: 700;
-            margin-bottom: 16px;
-            color: var(--text-color);
-            border-left: 3px solid var(--accent-purple);
-            padding-left: 10px;
-        }
-
-        .slider-group {
-            margin-bottom: 12px;
-        }
-
-        .slider-header {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 4px;
-        }
-
-        input[type="range"] {
-            width: 100%;
-            height: 4px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 2px;
-            outline: none;
-            -webkit-appearance: none;
-            accent-color: var(--accent-purple);
-        }
-
-        .audio-player-container {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            margin-top: 10px;
-        }
-
-        audio {
-            width: 100%;
-            height: 32px;
-        }
-
-        /* Compile logs screen */
-        .compile-card {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .console-log {
-            background: #05040a;
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            height: 180px;
-            padding: 12px;
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 11px;
-            color: #10b981;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            line-height: 1.4;
-        }
-
-        .progress-bar-container {
-            width: 100%;
-            height: 6px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 3px;
-            overflow: hidden;
-            display: none;
-        }
-
-        .progress-bar {
-            width: 0%;
-            height: 100%;
-            background: linear-gradient(to right, var(--accent-color), var(--accent-purple));
-            transition: width 0.3s ease;
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: var(--success-color);
-            color: #000;
-            padding: 12px 24px;
-            border-radius: 6px;
-            font-weight: 700;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            transform: translateY(100px);
-            opacity: 0;
-            transition: all 0.3s ease;
-            z-index: 1000;
-        }
-
-        .toast.show {
-            transform: translateY(0);
-            opacity: 1;
-        }
-
-        .loading-spinner {
-            border: 3px solid rgba(255, 255, 255, 0.1);
-            border-radius: 50%;
-            border-top: 3px solid var(--accent-color);
-            width: 18px;
-            height: 18px;
-            animation: spin 1s linear infinite;
-            display: inline-block;
-            vertical-align: middle;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        
-        .play-video-btn {
-            background: var(--success-color);
-            color: #000;
-            font-weight: 700;
-            text-decoration: none;
-            padding: 12px 20px;
-            border-radius: 6px;
-            text-align: center;
-            display: none;
-            transition: all 0.2s ease;
-            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
-        }
-        .play-video-btn:hover {
-            transform: scale(1.02);
-            filter: brightness(1.1);
-        }
-
-        /* 右上角版本標籤 (Capsule Version Badge) */
-        .version-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            background: rgba(18, 24, 33, 0.75);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 9999px;
-            padding: 7px 20px;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-        }
-
-        .version-badge .version-dot {
-            width: 9px;
-            height: 9px;
-            border-radius: 50%;
-            background-color: #4e937a;
-            box-shadow: 0 0 8px rgba(78, 147, 122, 0.6);
-            flex-shrink: 0;
-        }
-
-        .version-badge .version-text {
-            font-family: 'GenSeki TW', system-ui, -apple-system, sans-serif;
-            font-weight: 700;
-            font-size: 13px;
-            letter-spacing: 0.08em;
-            color: #ffffff;
-            text-transform: uppercase;
-            white-space: nowrap;
-        }
-    </style>
+    <title>影片製作工坊 · Video Workshop</title>
+    <link rel="stylesheet" href="/ui/studio.css">
 </head>
 <body>
     <header>
-        <h1>🎬 簡報影片 AI 製作工坊</h1>
-        <div class="version-badge">
-            <span class="version-dot"></span>
-            <span class="version-text">SLIDE EDITION v3.0.0 (2026/10/05)</span>
+        <div class="brand">
+            <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="7" width="18" height="14" rx="3"/><path d="M3 12h18M7 7l3 5m4-5l3 5M3 7l17-4"/></svg></span>
+            <div><h1>影片製作工坊</h1><p class="brand-subtitle">VIDEO WORKSHOP / CREATIVE STUDIO</p></div>
+        </div>
+        <div class="header-actions">
+            <div class="version-badge"><span class="version-dot"></span><span>本機創作工作區</span></div>
+            <button class="secondary" onclick="document.getElementById('compileCard').scrollIntoView({behavior: 'smooth', block: 'start'}); document.getElementById('btnRenderVideo').focus({preventScroll: true})">輸出影片 ↗</button>
         </div>
     </header>
 
     <div class="container">
         <!-- Left: Slide List & Upload Form -->
-        <div class="sidebar">
+        <aside class="sidebar" aria-label="專案與投影片">
+            <p class="panel-eyebrow">YOUR PROJECT</p>
             <!-- Upload Panel -->
-            <div class="card" style="margin: 10px; padding: 15px; background: rgba(30, 27, 57, 0.6); border: 1px solid rgba(6, 182, 212, 0.2);">
-                <div style="font-size: 13px; font-weight: 700; color: var(--accent-color); margin-bottom: 8px;">📂 匯入全新簡報與口白</div>
-                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.3;">
-                    請提供簡報 PDF（若是 PPTX 請另存為 PDF）與口白文字檔案：
-                </div>
+            <div class="card import-card">
+                <div class="import-title">開始一個新故事</div>
+                <p class="import-help">匯入簡報 PDF 與口白，<br>把想法變成有聲有色的影片。</p>
                 <div style="display: flex; flex-direction: column; gap: 8px; font-size: 12px;">
                     <div>
                         <label style="font-size: 11px; margin-bottom: 2px; display: block; color: var(--text-color)">1. 簡報投影片 PDF</label>
@@ -1748,27 +1389,46 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <input type="file" id="narrationFile" accept=".pdf,.txt" style="font-size: 11px; width: 100%; color: var(--text-muted);">
                     </div>
                     <button class="primary" id="btnUploadProject" style="font-size: 11px; padding: 6px 12px; margin-top: 6px; width: 100%;">
-                        🚀 匯入並初始化專案
+                        ＋ 匯入專案
                     </button>
                 </div>
             </div>
 
-            <div class="sidebar-header">投影片分頁清單</div>
+            <div class="sidebar-header"><span>投影片清單</span><span class="count-badge" id="slideCount">0 頁</span></div>
             <ul class="slide-list" id="slideList">
                 <!-- Slide items will be loaded dynamically -->
             </ul>
-        </div>
+        </aside>
 
         <!-- Center: Slide Editor -->
-        <div class="main-editor">
-            <div class="card" style="padding: 12px;">
+        <main class="main-editor" aria-label="影片編輯工作區">
+            <section class="welcome-banner" aria-labelledby="welcomeTitle">
+                <div class="welcome-copy">
+                    <p class="panel-eyebrow">A LITTLE IDEA. A GREAT STORY.</p>
+                    <h2 id="welcomeTitle">讓每一頁，都有故事。</h2>
+                    <p>從簡報、口白到影片，在這裡完成你的創作。</p>
+                    <div class="project-pill"><span aria-hidden="true">◈</span><span id="projectName">尚未匯入專案</span></div>
+                </div>
+            </section>
+            <div class="workspace-heading">
+                <div><h2>創作工作區</h2><p>選擇投影片，編輯口白並試聽配音。</p></div>
+                <span class="stage-label">16:9 畫面預覽</span>
+            </div>
+            <div class="card preview-card">
+                <div class="preview-toolbar"><span id="previewPageLabel">投影片預覽</span><label class="preview-status"><input type="checkbox" id="showSubtitleOverlay" checked> 顯示字幕預覽</label></div>
                 <div class="preview-container">
-                    <img id="slidePreview" class="preview-img" src="" alt="Slide Preview">
+                    <img id="slidePreview" class="preview-img" alt="目前投影片預覽" hidden>
+                    <div class="subtitle-canvas" id="mainSubtitleCanvas"><div class="subtitle-rendered-text"></div></div>
+                    <div class="preview-empty" id="previewEmpty">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 22h8m-4-4v4m-2-14l5 3-5 3z"/></svg>
+                        <strong>你的下一部作品，從這裡開始</strong>
+                        <p>匯入簡報與口白，即可開始編輯。</p>
+                    </div>
                 </div>
             </div>
 
             <div class="card">
-                <div class="section-title">分頁口白編輯與配音</div>
+                <div class="section-title"><span class="section-number">01</span> 本頁口白與配音</div>
                 <div class="editor-form">
                     <div class="form-row">
                         <div class="form-group" style="flex: 0.2;">
@@ -1783,19 +1443,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                     <div class="form-group">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                            <label for="slideNarration">旁白口白內容 (句子間用標點符號分隔，將自動切分子句時間碼)</label>
+                            <label for="slideNarration">旁白內容</label>
                             <div id="dialogueTagContainer" style="display: none; gap: 6px; align-items: center;">
                                 <span style="font-size: 11px; color: var(--text-muted);">快速插入對話標點:</span>
                                 <button type="button" class="secondary" onclick="insertTag('A: ')" style="padding: 2px 8px; font-size: 11px; background: rgba(6,182,212,0.15); color: #06b6d4; border-color: rgba(6,182,212,0.3);">+ A (主持人)</button>
                                 <button type="button" class="secondary" onclick="insertTag('B: ')" style="padding: 2px 8px; font-size: 11px; background: rgba(139,92,246,0.15); color: #8b5cf6; border-color: rgba(139,92,246,0.3);">+ B (對談者)</button>
                             </div>
                         </div>
-                        <textarea id="slideNarration" placeholder="請輸入口白段落... 支援雙人對話如 『A: 內容... B: 內容...』"></textarea>
+                        <textarea id="slideNarration" placeholder="寫下這一頁想說的話… 雙人對談可使用 A: 與 B: 標記。"></textarea>
+                        <div class="editor-footnote"><span>依標點自動切分字幕時間碼</span><span id="narrationCount">0 字</span></div>
                     </div>
 
                     <div class="button-group">
-                        <button class="secondary" id="btnTestTts">🎵 試聽與生成本頁配音</button>
-                        <button class="primary" id="btnSaveSlide">💾 儲存口白文字</button>
+                        <button class="secondary" id="btnTestTts" disabled>▷ 生成配音並試聽</button>
+                        <button class="primary" id="btnSaveSlide" disabled>儲存口白</button>
                     </div>
 
                     <div class="audio-player-container" id="audioContainer" style="display: none;">
@@ -1804,17 +1465,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </div>
                 </div>
             </div>
-        </div>
+        </main>
 
         <!-- Right: Settings & Compiler -->
-        <div class="right-panel">
+        <aside class="right-panel" aria-label="製作與輸出設定">
+            <div class="settings-heading"><h2>製作設定</h2><span>細節，讓作品更出色</span></div>
             <!-- Voice & Dual Dialogue Settings -->
             <div class="card collapsible-card active" id="voiceCard">
-                <div class="collapsible-header" onclick="toggleCollapsible('voiceCard')">
-                    <span class="title-text">🎙️ 雙人對話與語音設定</span>
-                    <span class="arrow-icon">▼</span>
-                </div>
-                <div class="collapsible-content">
+                <button type="button" class="collapsible-header" aria-expanded="false" aria-controls="voiceCardContent" onclick="toggleCollapsible('voiceCard')">
+                    <span class="title-text"><span class="section-number">02</span> 聲音與對話</span>
+                    <span class="arrow-icon" aria-hidden="true">⌄</span>
+                </button>
+                <div class="collapsible-content" id="voiceCardContent">
                     <div class="form-group" style="margin-bottom: 14px;">
                         <label for="voiceMode">語音播報模式</label>
                         <select id="voiceMode" onchange="toggleVoiceModeUI()">
@@ -1865,10 +1527,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </div>
 
                     <!-- Dual Voice Mode UI -->
-                    <div id="dualVoicePanel" style="display: none; background: rgba(0,0,0,0.25); padding: 14px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 14px;">
+                    <div id="dualVoicePanel" style="display: none; background: #27352f; padding: 14px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 14px;">
                         
                         <!-- 雙人高對比推薦配色預設面板 -->
-                        <div style="background: rgba(255,255,255,0.05); padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 11px;">
+                        <div style="background: #28332f; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 11px;">
                             <div style="color: #aaa; font-weight: 600; margin-bottom: 6px;">✨ 推薦黑底高對比雙人配色組合：</div>
                             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                 <button type="button" onclick="setDualColors('#40a9ff', '#fadb14')" style="padding: 3px 8px; font-size: 11px; background: rgba(64,169,255,0.15); color: #fff; border: 1px solid #40a9ff; border-radius: 4px; cursor: pointer;">
@@ -1885,7 +1547,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                         <!-- Speaker A Box -->
                         <div style="margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px dashed var(--border-color);">
-                            <div style="font-size: 12px; font-weight: bold; color: #40a9ff; margin-bottom: 8px;">🔷 角色 A (主講人 / Host A)</div>
+                            <div style="font-size: 12px; font-weight: bold; color: #9dc5af; margin-bottom: 8px;">🔷 角色 A (主講人 / Host A)</div>
                             <div class="form-row" style="margin-bottom: 8px;">
                                 <div class="form-group">
                                     <label for="spkA_name">角色名稱</label>
@@ -1941,7 +1603,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                         <!-- Speaker B Box -->
                         <div>
-                            <div style="font-size: 12px; font-weight: bold; color: #fadb14; margin-bottom: 8px;">💛 角色 B (對談者 / Guest B)</div>
+                            <div style="font-size: 12px; font-weight: bold; color: #d5b77e; margin-bottom: 8px;">💛 角色 B (對談者 / Guest B)</div>
                             <div class="form-row" style="margin-bottom: 8px;">
                                 <div class="form-group">
                                     <label for="spkB_name">角色名稱</label>
@@ -2004,17 +1666,21 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <input type="range" id="padTime" min="0" max="2" step="0.5" value="1.5" style="width: 100%;">
                     </div>
 
+                    <div class="form-group" style="margin-bottom: 14px;">
+                        <label for="silentPageDuration">無口白頁停留秒數（不含配音）</label>
+                        <input type="number" id="silentPageDuration" min="1" max="120" step="1" value="5">
+                    </div>
                     <button class="secondary" id="btnSaveVoiceSettings" style="width: 100%;">💾 儲存語音對話設定</button>
-                    <button class="secondary" id="btnLoadDualSample" style="width: 100%; margin-top: 8px; background: rgba(139, 92, 246, 0.15); border-color: rgba(139, 92, 246, 0.4); color: #c084fc;">💡 載入雙人對話腳本範例</button>
+                    <button class="secondary" id="btnLoadDualSample" disabled style="width: 100%; margin-top: 8px; background: #38352f; border-color: #665742; color: #d8ba98;">填入本頁對話範例</button>
                 </div>
             </div>
 
             <div class="card collapsible-card" id="subtitleCard">
-                <div class="collapsible-header" onclick="toggleCollapsible('subtitleCard')">
-                    <span class="title-text">🎬 字幕樣式設定</span>
-                    <span class="arrow-icon">▼</span>
-                </div>
-                <div class="collapsible-content">
+                <button type="button" class="collapsible-header" aria-expanded="false" aria-controls="subtitleCardContent" onclick="toggleCollapsible('subtitleCard')">
+                    <span class="title-text"><span class="section-number">03</span> 字幕樣式</span>
+                    <span class="arrow-icon" aria-hidden="true">⌄</span>
+                </button>
+                <div class="collapsible-content" id="subtitleCardContent">
                     <div class="form-group" style="margin-bottom: 16px;">
                         <label for="subMode">字幕輸出模式</label>
                         <select id="subMode">
@@ -2028,10 +1694,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div style="display: flex; flex-direction: column; gap: 15px; margin-bottom: 16px;">
                         <!-- Preview Box -->
                         <div style="display: flex; flex-direction: column; gap: 6px;">
-                            <label>樣式即時預覽</label>
-                            <div id="subtitlePreviewBox" style="background-image: linear-gradient(to bottom, rgba(0,0,0,0.1), rgba(0,0,0,0.35)), url('/assets/images/page-01.png'), linear-gradient(135deg, #1e3c72, #f1a7a1); background-size: cover; background-position: center; border: 1px solid var(--border-color); border-radius: 6px; display: flex; align-items: flex-end; justify-content: center; padding: 15px; min-height: 100px; position: relative; overflow: hidden;">
-                                <div id="subtitlePreviewText" style="color: #fff; font-size: 14px; text-align: center; width: 100%; transition: all 0.2s; font-weight: bold; line-height: 1.4;">這是一段預覽字幕範例 (Subtitle Preview)</div>
+                            <label>字幕預覽 · 目前投影片</label>
+                            <div class="subtitle-mini-frame" id="subtitlePreviewBox">
+                                <img class="subtitle-slide-image" alt="目前投影片" hidden>
+                                <div class="subtitle-canvas"><div class="subtitle-rendered-text"></div></div>
                             </div>
+                            <div class="subtitle-cue-controls">
+                                <button type="button" class="secondary" data-preview-step="-1" aria-label="上一句字幕">‹</button>
+                                <span id="subtitleCuePosition">尚無字幕</span>
+                                <button type="button" class="secondary" data-preview-step="1" aria-label="下一句字幕">›</button>
+                            </div>
+                            <p id="subtitlePreviewText" class="subtitle-cue-copy">編輯本頁口白後即可預覽。</p>
+                            <p class="preview-note" id="subtitleTimingNote"></p>
+                            <button type="button" class="secondary" id="btnEnlargeSubtitle">放大預覽 ↗</button>
                         </div>
 
                         <!-- Inputs -->
@@ -2065,7 +1740,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 <select id="bgStyle">
                                     <option value="outline">描邊 + 陰影 (預設)</option>
                                     <option value="box">滿版/黑框背景</option>
-                                    <option value="none">無背景</option>
                                 </select>
                             </div>
                         </div>
@@ -2106,10 +1780,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
                     <div class="slider-group">
                         <div class="slider-header">
-                            <label for="maxWidth">最大寬度限制</label>
-                            <span id="maxWidthVal">85%</span>
+                            <label for="maxWidth">字幕安全區寬度</label>
+                            <span id="maxWidthVal">56%</span>
                         </div>
-                        <input type="range" id="maxWidth" min="60" max="98" value="85">
+                        <input type="range" id="maxWidth" min="30" max="56" value="56">
                     </div>
 
                     <button class="secondary" id="btnSaveSubtitle" style="width: 100%; margin-top: 10px;">💾 套用並儲存字幕樣式</button>
@@ -2117,11 +1791,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
 
             <div class="card collapsible-card" id="chapterCard">
-                <div class="collapsible-header" onclick="toggleCollapsible('chapterCard')">
-                    <span class="title-text">📌 頁面外觀與版本標籤設定</span>
-                    <span class="arrow-icon">▼</span>
-                </div>
-                <div class="collapsible-content">
+                <button type="button" class="collapsible-header" aria-expanded="false" aria-controls="chapterCardContent" onclick="toggleCollapsible('chapterCard')">
+                    <span class="title-text"><span class="section-number">04</span> 畫面與標籤</span>
+                    <span class="arrow-icon" aria-hidden="true">⌄</span>
+                </button>
+                <div class="collapsible-content" id="chapterCardContent">
                     <div class="form-group" style="margin-bottom: 16px; display: flex; flex-direction: row; align-items: center; gap: 10px;">
                         <input type="checkbox" id="showPageNumber" checked style="width: 18px; height: 18px; cursor: pointer; flex-shrink: 0; margin-top: 2px;">
                         <label for="showPageNumber" style="cursor: pointer; margin-bottom: 0; user-select: none;">顯示左上角頁數與標題</label>
@@ -2158,8 +1832,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <div class="card compile-card">
-                <div class="section-title">影片渲染控制</div>
+            <div class="card compile-card" id="compileCard">
+                <div class="section-title"><span class="section-number">05</span> 輸出你的作品</div>
                 
                 <div class="slider-group" style="margin-top: 10px; margin-bottom: 20px;">
                     <div class="slider-header">
@@ -2173,7 +1847,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <button class="primary" id="btnRenderVideo" style="width: 100%; padding: 14px; font-size: 15px; letter-spacing: 0.5px;">🎬 開始生成完整影片</button>
+                <label class="force-tts"><input type="checkbox" id="forceTts"> 重新生成全部配音（忽略快取）</label>
+                <button class="primary" id="btnRenderVideo" disabled style="width: 100%; padding: 14px; font-size: 15px; letter-spacing: 0.5px;">開始製作影片 ↗</button>
                 
                 <div class="progress-bar-container" id="progressBarContainer">
                     <div class="progress-bar" id="progressBar"></div>
@@ -2187,10 +1862,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <a id="btnPlayCleanVideo" class="play-video-btn" href="/《企業朝廷生存指南》_無字幕.mp4" target="_blank" style="flex: 1; margin-top: 0; background: #0E7C7B; color: #fff; box-shadow: 0 4px 12px rgba(14, 124, 123, 0.25);">▶ 播放無字幕版</a>
                 </div>
             </div>
-        </div>
+        </aside>
     </div>
 
-    <div class="toast" id="toast">儲存成功！</div>
+    <dialog id="subtitlePreviewDialog" class="subtitle-dialog" aria-labelledby="subtitleDialogTitle">
+        <div class="subtitle-dialog-header"><div><h2 id="subtitleDialogTitle">字幕輸出預覽</h2><p>目前投影片與本頁口白 · 1920 × 1080 等比例</p></div><button type="button" class="secondary" id="btnCloseSubtitlePreview" aria-label="關閉字幕預覽">✕</button></div>
+        <div class="subtitle-dialog-frame">
+            <img class="subtitle-slide-image" alt="目前投影片" hidden>
+            <div class="subtitle-canvas"><div class="subtitle-rendered-text"></div></div>
+            <img id="actualSubtitleFrame" alt="由 FFmpeg 渲染的實際字幕畫格" hidden>
+        </div>
+        <div class="subtitle-dialog-footer">
+            <div class="subtitle-cue-controls"><button type="button" class="secondary" data-preview-step="-1" aria-label="上一句字幕">‹</button><span id="subtitleDialogPosition">尚無字幕</span><button type="button" class="secondary" data-preview-step="1" aria-label="下一句字幕">›</button></div>
+            <button type="button" class="primary" id="btnActualSubtitleFrame">檢視 FFmpeg 實際輸出</button>
+        </div>
+        <p class="preview-note" id="subtitleActualStatus">等比例排版預覽；實際輸出可確認字型與描邊。此預覽不會儲存設定。</p>
+    </dialog>
+    <div class="toast" role="status" id="toast">儲存成功！</div>
 
     <script>
         // Global error boundary to help user debug issues
@@ -2203,6 +1891,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const card = document.getElementById(id);
             if (card) {
                 card.classList.toggle('active');
+                card.querySelector('.collapsible-header').setAttribute('aria-expanded', card.classList.contains('active'));
             }
         }
 
@@ -2214,10 +1903,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             try {
                 const res = await fetch('/api/slides');
                 const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || '操作失敗');
                 slidesData = data.slides;
+                ['btnSaveSlide', 'btnTestTts', 'btnLoadDualSample', 'btnRenderVideo'].forEach(id => {
+                    document.getElementById(id).disabled = slidesData.length === 0;
+                });
+                document.getElementById('projectName').textContent = data.project_info?.slide_pdf_name || '尚未匯入專案';
                 
                 if (data.voice_settings) {
                     const vs = data.voice_settings;
+                    document.getElementById('silentPageDuration').value = vs.silent_page_duration || 5;
                     if (vs.mode) document.getElementById('voiceMode').value = vs.mode;
                     if (vs.voice) document.getElementById('voiceSelect').value = vs.voice;
                     if (vs.rate) document.getElementById('rateSelect').value = vs.rate;
@@ -2262,13 +1957,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     document.getElementById('bgOpacityVal').textContent = sub.bg_opacity !== undefined ? sub.bg_opacity : 0.75;
                     document.getElementById('bottomPos').value = sub.bottom_pos || 50;
                     document.getElementById('bottomPosVal').textContent = (sub.bottom_pos || 50) + 'px';
-                    document.getElementById('maxWidth').value = sub.max_width || 85;
-                    document.getElementById('maxWidthVal').textContent = (sub.max_width || 85) + '%';
+                    document.getElementById('maxWidth').value = Math.min(56, Math.max(30, sub.max_width || 56));
+                    document.getElementById('maxWidthVal').textContent = document.getElementById('maxWidth').value + '%';
                     
                     // Populate new inputs
                     document.getElementById('fontName').value = sub.font_name || 'Microsoft JhengHei';
                     document.getElementById('fontColor').value = sub.font_color || 'white';
-                    document.getElementById('bgStyle').value = sub.bg_style || 'outline';
+                    document.getElementById('bgStyle').value = sub.bg_style === 'box' ? 'box' : 'outline';
                 }
 
                 if (data.chapter_settings) {
@@ -2296,7 +1991,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 const playCleanBtn = document.getElementById('btnPlayCleanVideo');
                 let baseName = "《企業朝廷生存指南》";
                 if (data.project_info && data.project_info.slide_pdf_name) {
-                    baseName = data.project_info.slide_pdf_name.replace(/\.[^/.]+$/, "");
+                    baseName = data.project_info.slide_pdf_name.replace(/\\.[^/.]+$/, "");
                 }
                 playBtn.href = `/MovieOutput/${encodeURIComponent(baseName)}_內嵌字幕.mp4`;
                 playCleanBtn.href = `/MovieOutput/${encodeURIComponent(baseName)}_無字幕.mp4`;
@@ -2309,13 +2004,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 if (slidesData.length > 0) {
                     selectSlide(0);
                 } else {
-                    document.getElementById('slidePreview').src = '';
+                    document.getElementById('slidePreview').removeAttribute('src');
+                    document.getElementById('slidePreview').hidden = true;
+                    document.getElementById('previewEmpty').hidden = false;
                     document.getElementById('slideNum').value = '';
                     document.getElementById('slideTitle').value = '';
                     document.getElementById('slideNarration').value = '';
                 }
             } catch (err) {
                 console.error("Failed to load slides:", err);
+                document.getElementById('projectName').textContent = '暫時無法載入，請稍後重新整理';
+                showToast(err.message || '專案載入失敗');
             }
         }
 
@@ -2323,6 +2022,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         function renderSidebar() {
             const list = document.getElementById('slideList');
             list.innerHTML = '';
+            document.getElementById('slideCount').textContent = `${slidesData.length} 頁`;
+            if (!slidesData.length) {
+                const empty = document.createElement('li');
+                empty.className = 'sidebar-empty';
+                empty.textContent = '還沒有投影片。匯入專案後，你的故事會出現在這裡。';
+                list.appendChild(empty);
+            }
             slidesData.forEach((s, idx) => {
                 const li = document.createElement('li');
                 li.className = `slide-item ${idx === currentSlideIdx ? 'active' : ''}`;
@@ -2331,10 +2037,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="slide-thumb" style="background-image: url('/assets/images/page-${fileNum}.png?t=${new Date().getTime()}')"></div>
                     <div class="slide-info">
                         <div class="num">PAGE ${fileNum}</div>
-                        <div class="title">${s.title}</div>
+                        <div class="title"></div>
                     </div>
                 `;
+                li.querySelector('.title').textContent = s.title;
+                li.tabIndex = 0;
+                li.setAttribute('role', 'button');
+                li.setAttribute('aria-label', `第 ${s.num} 頁：${s.title}`);
+                li.setAttribute('aria-current', idx === currentSlideIdx ? 'true' : 'false');
                 li.onclick = () => selectSlide(idx);
+                li.onkeydown = (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectSlide(idx); }
+                };
                 list.appendChild(li);
             });
         }
@@ -2346,10 +2060,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const s = slidesData[idx];
             const fileNum = String(s.num).padStart(2, '0');
             
+            document.getElementById('slidePreview').hidden = false;
+            document.getElementById('previewEmpty').hidden = true;
+            document.getElementById('previewPageLabel').textContent = `投影片 ${fileNum} / ${slidesData.length} 頁`;
             document.getElementById('slidePreview').src = `/assets/images/page-${fileNum}.png?t=${new Date().getTime()}`;
             document.getElementById('slideNum').value = s.num;
             document.getElementById('slideTitle').value = s.title;
             document.getElementById('slideNarration').value = s.narration;
+            updateNarrationCount();
 
             document.getElementById('audioContainer').style.display = 'none';
             document.getElementById('audioPlayer').src = '';
@@ -2400,6 +2118,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || '操作失敗');
                 if (data.success) {
                     showToast(`專案建立成功！共載入 ${data.num_slides} 頁簡報。`);
                     await loadSlides();
@@ -2436,62 +2155,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         // Subtitle Live Preview Logic
         function updateSubtitlePreview() {
-            const fontName = document.getElementById('fontName').value;
-            const fontColor = document.getElementById('fontColor').value;
-            const bgStyle = document.getElementById('bgStyle').value;
-            const fontSize = parseInt(document.getElementById('fontSize').value);
-            const bgOpacity = parseFloat(document.getElementById('bgOpacity').value);
-            const bottomPos = parseInt(document.getElementById('bottomPos').value);
-            
-            const previewText = document.getElementById('subtitlePreviewText');
-            const previewBox = document.getElementById('subtitlePreviewBox');
-            
-            // Show/Hide background opacity group depending on style
-            const bgOpacityGroup = document.getElementById('bgOpacityGroup');
-            if (bgStyle === 'box') {
-                bgOpacityGroup.style.display = 'block';
-            } else {
-                bgOpacityGroup.style.display = 'none';
-            }
-            
-            // 1. Font Family
-            previewText.style.fontFamily = `"${fontName}", 'PingFang TC', 'Microsoft JhengHei', sans-serif`;
-            
-            // 2. Font Color (避開刺眼螢光色，使用舒服的高明度對比色)
-            const colorMap = {
-                white: '#ffffff',
-                yellow: '#ffff00',
-                cyan: '#40a9ff',
-                green: '#a0d911',
-                gray: '#cccccc'
-            };
-            previewText.style.color = colorMap[fontColor] || '#ffffff';
-            
-            // 3. Font Size (scale it down slightly to fit the preview box)
-            const scaledSize = Math.max(12, Math.min(28, fontSize * 0.5));
-            previewText.style.fontSize = scaledSize + 'px';
-            
-            // 4. Background style & shadows
-            if (bgStyle === 'outline') {
-                previewText.style.textShadow = '-1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000, 0 2px 4px rgba(0,0,0,0.85)';
-                previewText.style.background = 'transparent';
-                previewText.style.padding = '0';
-                previewText.style.borderRadius = '0';
-            } else if (bgStyle === 'box') {
-                previewText.style.textShadow = 'none';
-                previewText.style.background = `rgba(8, 8, 8, ${bgOpacity})`;
-                previewText.style.padding = '4px 12px';
-                previewText.style.borderRadius = '6px';
-            } else { // none
-                previewText.style.textShadow = 'none';
-                previewText.style.background = 'transparent';
-                previewText.style.padding = '0';
-                previewText.style.borderRadius = '0';
-            }
-            
-            // 5. Margin V (bottomPos) - scale down by factor of 3 for the preview box
-            const scaledMargin = Math.max(5, Math.min(50, bottomPos * 0.35));
-            previewBox.style.paddingBottom = scaledMargin + 'px';
+            document.getElementById('bgOpacityGroup').style.display = document.getElementById('bgStyle').value === 'box' ? 'block' : 'none';
+            window.refreshSubtitlePreview?.();
         }
 
         // Update range sliders text
@@ -2509,6 +2174,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         };
         document.getElementById('maxWidth').oninput = function() {
             document.getElementById('maxWidthVal').textContent = this.value + '%';
+            updateSubtitlePreview();
         };
 
         // Wire up dropdowns for live preview
@@ -2521,6 +2187,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const elB = document.getElementById('spkB_color');
             if (elA) elA.value = colorA;
             if (elB) elB.value = colorB;
+            updateSubtitlePreview();
             showToast("已更新雙人高對比配色！");
         }
 
@@ -2549,6 +2216,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || '操作失敗');
                 if (data.success) {
                     s.title = payload.title;
                     s.narration = payload.narration;
@@ -2577,6 +2245,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 rate: document.getElementById('rateSelect').value,
                 pitch: document.getElementById('pitchSelect').value,
                 pad_time: parseFloat(document.getElementById('padTime').value),
+                silent_page_duration: parseFloat(document.getElementById('silentPageDuration').value),
                 speaker_a: {
                     name: document.getElementById('spkA_name').value,
                     color: document.getElementById('spkA_color').value,
@@ -2600,6 +2269,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || '操作失敗');
                 if (data.success) {
                     const audio = document.getElementById('audioPlayer');
                     audio.src = data.audio_url;
@@ -2607,6 +2277,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     document.getElementById('audioDuration').textContent = `旁白長度: ${data.duration} 秒`;
                     audio.play();
                     showToast("配音檔產生成功！");
+                    window.refreshSubtitlePreview?.();
                 } else {
                     alert("配音失敗: " + data.error);
                 }
@@ -2641,6 +2312,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || '操作失敗');
                 if (data.success) {
                     showToast("字幕樣式儲存成功！");
                 }
@@ -2674,6 +2346,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     body: JSON.stringify(payload)
                 });
                 const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || '操作失敗');
                 if (data.success) {
                     showToast("頁面與版本標籤儲存成功！");
                 }
@@ -2702,7 +2375,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             progressContainer.style.display = 'block';
             progressBar.style.width = '10%';
 
-            const es = new EventSource('/api/render_video');
+            const es = new EventSource('/api/render_video' + (document.getElementById('forceTts').checked ? '?force=1' : ''));
             
             es.onmessage = (event) => {
                 const data = JSON.parse(event.data);
@@ -2714,6 +2387,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     if (data.log.includes('build_index.py')) progressBar.style.width = '45%';
                     if (data.log.includes('Playwright')) progressBar.style.width = '60%';
                     if (data.log.includes('muxING')) progressBar.style.width = '85%';
+                }
+                if (data.error) {
+                    consoleLog.textContent += `[失敗] ${data.error}\\n`;
+                    consoleLog.scrollTop = consoleLog.scrollHeight;
+                    btn.disabled = false;
+                    progressContainer.style.display = 'none';
+                    es.close();
+                    showToast("製作失敗，請查看日誌。");
+                    return;
                 }
                 if (data.complete) {
                     progressBar.style.width = '100%';
@@ -2756,6 +2438,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const val = txt.value;
             txt.value = val.substring(0, start) + tag + val.substring(end);
             txt.focus();
+            updateNarrationCount();
             txt.selectionStart = txt.selectionEnd = start + tag.length;
         }
 
@@ -2786,6 +2469,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 rate: document.getElementById('rateSelect').value,
                 pitch: document.getElementById('pitchSelect').value,
                 pad_time: parseFloat(document.getElementById('padTime').value),
+                silent_page_duration: parseFloat(document.getElementById('silentPageDuration').value),
                 speaker_a: {
                     name: document.getElementById('spkA_name').value,
                     color: document.getElementById('spkA_color').value,
@@ -2802,14 +2486,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 }
             };
             try {
-                await fetch('/api/save_voice_settings', {
+                const res = await fetch('/api/save_voice_settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
+                const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || '設定儲存失敗');
                 showToast("語音對話設定儲存成功！");
             } catch (err) {
                 console.error("儲存語音對話設定失敗:", err);
+                showToast("儲存失敗：" + err.message);
             }
         }
 
@@ -2833,23 +2520,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             ];
 
             if (slidesData.length > 0) {
-                for (let i = 0; i < slidesData.length; i++) {
-                    const text = sampleScript[i % sampleScript.length];
-                    slidesData[i].narration = text;
-                    await fetch('/api/save_slide', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            num: slidesData[i].num,
-                            title: slidesData[i].title,
-                            narration: text
-                        })
-                    });
-                }
-                await saveVoiceSettings();
-                selectSlide(currentSlideIdx);
-                showToast("已成功載入雙人對話範例腳本！");
+                document.getElementById('slideNarration').value = sampleScript[currentSlideIdx % sampleScript.length];
+                updateNarrationCount();
+                showToast("已填入本頁範例，確認後請儲存口白與語音設定。");
             }
+
         };
 
         // Update range slider text & auto-save for video crf
@@ -2859,24 +2534,35 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         document.getElementById('videoCrf').onchange = async function() {
             const payload = { crf: parseInt(this.value) };
             try {
-                await fetch('/api/save_video_settings', {
+                const res = await fetch('/api/save_video_settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
+                const data = await res.json();
+                if (!res.ok || data.success === false) throw new Error(data.error || '畫質設定儲存失敗');
             } catch (err) {
                 console.error("自動儲存畫質設定失敗:", err);
             }
         };
 
+        function updateNarrationCount() {
+            document.getElementById('narrationCount').textContent = `${Array.from(document.getElementById('slideNarration').value).length} 字`;
+            window.refreshSubtitlePreview?.();
+        }
+        document.getElementById('slideNarration').addEventListener('input', updateNarrationCount);
+        document.querySelectorAll('.collapsible-card').forEach(card => {
+            card.querySelector('.collapsible-header').setAttribute('aria-expanded', card.classList.contains('active'));
+        });
         window.onload = loadSlides;
     </script>
+    <script src="/ui/subtitles.js"></script>
 </body>
 </html>
 """
 
 def main():
-    calculate_dynamic_timings()
+    # The editor can open before audio exists; render computes validated timings.
     
     server_address = ('', PORT)
     # Use ThreadingHTTPServer for concurrent connections

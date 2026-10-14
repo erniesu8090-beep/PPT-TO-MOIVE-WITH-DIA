@@ -3,10 +3,10 @@
   "font_name": "Microsoft JhengHei",
   "font_color": "white",
   "bg_style": "outline",
-  "font_size": 44,
+  "font_size": 55,
   "bg_opacity": 0.5,
-  "bottom_pos": 40,
-  "max_width": 90,
+  "bottom_pos": 64,
+  "max_width": 56,
   "embed": true,
   "mode": "embed"
 }

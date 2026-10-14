@@ -1,9 +1,10 @@
 {
   "mode": "single",
-  "voice": "zh-TW-HsiaoChenNeural",
+  "voice": "zh-TW-YunJheNeural",
   "rate": "0%",
-  "pitch": "+2Hz",
+  "pitch": "0Hz",
   "pad_time": 0.5,
+  "silent_page_duration": 5.0,
   "speaker_a": {
     "name": "主持人 A",
     "color": "#40a9ff",

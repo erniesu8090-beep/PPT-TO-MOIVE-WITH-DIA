@@ -4,6 +4,62 @@ import os
 import shutil
 from pathlib import Path
 import sys
+from subtitle_styles import ass_header as make_ass_header
+from subtitle_utils import split_timed_text, wrap_ass_lines, ass_text, format_srt_time, format_ass_time
+
+def generate_subtitles(settings):
+    timings_dyn_path = Path("timings_dynamic.json")
+    if not timings_dyn_path.exists():
+        return "", ""
+    try:
+        with open(timings_dyn_path, "r", encoding="utf-8") as f_td:
+            timings_dyn = json.load(f_td)
+    except Exception as e:
+        print(f"  (解析 timings_dynamic.json 失敗: {e})")
+        return "", ""
+
+    # 讀取雙人角色色彩
+    voice_settings = {}
+    voice_path = Path("voice_settings.json")
+    if voice_path.exists():
+        try:
+            with open(voice_path, "r", encoding="utf-8") as f_vs:
+                voice_settings = json.load(f_vs)
+        except Exception:
+            pass
+
+    is_dual = voice_settings.get("mode") == "dual"
+    ass_header = make_ass_header(settings, voice_settings)
+
+    srt_parts, ass_events = [], []
+    subtitle_index, global_time_offset = 1, 0.0
+    for page in timings_dyn:
+        page_dual = is_dual or any(c.get("speaker") == "B" for c in page.get("clauses", []))
+        previous_speaker = None
+        for clause in page.get("clauses", []):
+            text = clause.get("text", "").strip()
+            if not text:
+                continue
+            speaker = clause.get("speaker", "A")
+            dual = page_dual
+            style_name = ("SpeakerB" if speaker == "B" else "SpeakerA") if dual else "Default"
+            name = clause.get("speaker_name", "").strip()
+            show_label = clause.get("show_speaker_label", previous_speaker != speaker)
+            prefix = f"[{name}]" if dual and name and show_label else ""
+            for cue in split_timed_text(text, global_time_offset + clause.get("start", 0),
+                                       global_time_offset + clause.get("end", 0), prefix=prefix):
+                plain = wrap_ass_lines(ass_text(cue["text"]))
+                srt_text = plain.replace(r"\N", "\n")
+                srt_parts.append(f"{subtitle_index}\n{format_srt_time(cue['start'])} --> {format_srt_time(cue['end'])}\n{srt_text}\n\n")
+                ass_events.append(f"Dialogue: 0,{format_ass_time(cue['start'])},{format_ass_time(cue['end'])},{style_name},,0,0,0,,{plain}")
+                subtitle_index += 1
+            previous_speaker = speaker
+        global_time_offset += page.get("dur", 0)
+    srt_content = ''.join(srt_parts)
+
+    ass_content = ass_header + "\n".join(ass_events) + "\n"
+    return srt_content, ass_content
+
 
 def run_render():
     sys.stdout.reconfigure(encoding='utf-8')
@@ -43,11 +99,12 @@ def run_render():
             out_file = tmp_audio_dir / f"padded-{i:02d}.mp3"
             
             # 使用 ffmpeg 將每段旁白尾端填補靜音，使其剛好達到指定的單頁秒數 dur
-            cmd_pad = [
-                "ffmpeg", "-y", "-i", str(in_file),
-                "-af", "apad", "-t", str(dur),
-                str(out_file)
-            ]
+            if p.get("silent", False):
+                cmd_pad = ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", str(dur), str(out_file)]
+            else:
+                if p.get("audio_status") == "estimated":
+                    raise RuntimeError(f"第 {i} 頁配音尚未完成，請先生成配音。")
+                cmd_pad = ["ffmpeg", "-y", "-i", str(in_file), "-af", "apad", "-t", str(dur), str(out_file)]
             subprocess.run(cmd_pad, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print(f"  ✓ 填補 page-{i:02d}.mp3 -> {dur} 秒")
             
@@ -148,146 +205,6 @@ def run_render():
             pass
 
     # Helper: 產生標準 SRT 與 1080p 等比例 ASS 格式字幕
-    def generate_subtitles(settings):
-        timings_dyn_path = Path("timings_dynamic.json")
-        if not timings_dyn_path.exists():
-            return "", ""
-        try:
-            with open(timings_dyn_path, "r", encoding="utf-8") as f_td:
-                timings_dyn = json.load(f_td)
-        except Exception as e:
-            print(f"  (解析 timings_dynamic.json 失敗: {e})")
-            return "", ""
-
-        # 讀取雙人角色色彩
-        voice_settings = {}
-        voice_path = Path("voice_settings.json")
-        if voice_path.exists():
-            try:
-                with open(voice_path, "r", encoding="utf-8") as f_vs:
-                    voice_settings = json.load(f_vs)
-            except Exception:
-                pass
-
-        font_name = settings.get("font_name", "Microsoft JhengHei")
-        font_size = settings.get("font_size", 42)
-        font_color = settings.get("font_color", "white")
-        bg_style = settings.get("bg_style", "outline")
-        bg_opacity = settings.get("bg_opacity", 0.75)
-        bottom_pos = settings.get("bottom_pos", 40)
-
-        # 顏色轉換 (RGB -> ASS BGR: &H00BBGGRR&)
-        def hex_to_ass(hex_str, default="&H00FFFFFF&"):
-            if not hex_str or not hex_str.startswith("#"):
-                return default
-            h = hex_str.lstrip("#")
-            if len(h) == 6:
-                return f"&H00{h[4:6]}{h[2:4]}{h[0:2]}&"
-            return default
-
-        color_map = {
-            "white": "&H00FFFFFF&",
-            "yellow": "&H0000FFFF&",
-            "cyan": "&H00FFA940&",
-            "green": "&H0011D9A0&",
-            "gray": "&H00CCCCCC&"
-        }
-        primary_colour = color_map.get(font_color, "&H00FFFFFF&")
-
-        spk_a_colour = hex_to_ass(voice_settings.get("speaker_a", {}).get("color"), "&H00FFA940&")
-        spk_b_colour = hex_to_ass(voice_settings.get("speaker_b", {}).get("color"), "&H0014DBFA&")
-        is_dual = voice_settings.get("mode") == "dual"
-
-        if bg_style == "box":
-            border_style = 3
-            outline = 0
-            shadow = 0
-            alpha_hex = f"{int((1.0 - bg_opacity) * 255):02X}"
-            back_colour = f"&H{alpha_hex}000000&"
-        elif bg_style == "none":
-            border_style = 1
-            outline = 0
-            shadow = 0
-            back_colour = "&H00000000&"
-        else:  # outline (黑底描邊 + 陰影，最清晰不易疲勞)
-            border_style = 1
-            outline = 2
-            shadow = 1
-            back_colour = "&H00000000&"
-
-        # 關鍵：設定 PlayResX=1920 與 PlayResY=1080，保證 font_size 42 剛好為 42 螢幕像素，與網頁預覽 100% 一致
-        ass_header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: 1920
-PlayResY: 1080
-WrapStyle: 0
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{font_size},{primary_colour},&H000000FF&,&H00000000&,{back_colour},-1,0,0,0,100,100,0,0,{border_style},{outline},{shadow},2,30,30,{bottom_pos},1
-Style: SpeakerA,{font_name},{font_size},{spk_a_colour},&H000000FF&,&H00000000&,{back_colour},-1,0,0,0,100,100,0,0,{border_style},{outline},{shadow},2,30,30,{bottom_pos},1
-Style: SpeakerB,{font_name},{font_size},{spk_b_colour},&H000000FF&,&H00000000&,{back_colour},-1,0,0,0,100,100,0,0,{border_style},{outline},{shadow},2,30,30,{bottom_pos},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-        def format_srt_time(seconds):
-            hours = int(seconds // 3600)
-            minutes = int((seconds % 3600) // 60)
-            secs = int(seconds % 60)
-            milliseconds = int(round((seconds - int(seconds)) * 1000))
-            return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
-
-        def format_ass_time(seconds):
-            hours = int(seconds // 3600)
-            minutes = int((seconds % 3600) // 60)
-            secs = int(seconds % 60)
-            centiseconds = int(round((seconds - int(seconds)) * 100))
-            if centiseconds >= 100:
-                centiseconds = 99
-            return f"{hours}:{minutes:02d}:{secs:02d}.{centiseconds:02d}"
-
-        srt_content = ""
-        ass_events = []
-        subtitle_index = 1
-        global_time_offset = 0.0
-
-        for page in timings_dyn:
-            page_dur = page.get("dur", 0)
-            clauses = page.get("clauses", [])
-            for clause in clauses:
-                c_text = clause.get("text", "").strip()
-                if not c_text:
-                    continue
-                c_start = global_time_offset + clause.get("start", 0)
-                c_end = global_time_offset + clause.get("end", 0)
-
-                speaker = clause.get("speaker", "A")
-                spk_name = clause.get("speaker_name", "").strip()
-
-                if is_dual or speaker == "B":
-                    style_name = "SpeakerB" if speaker == "B" else "SpeakerA"
-                    full_text = f"[{spk_name}] {c_text}" if spk_name else c_text
-                else:
-                    style_name = "Default"
-                    full_text = c_text
-
-                # 建立 SRT
-                srt_content += f"{subtitle_index}\n"
-                srt_content += f"{format_srt_time(c_start)} --> {format_srt_time(c_end)}\n"
-                srt_content += f"{full_text}\n\n"
-                subtitle_index += 1
-
-                # 建立 ASS
-                ass_events.append(f"Dialogue: 0,{format_ass_time(c_start)},{format_ass_time(c_end)},{style_name},,0,0,0,,{full_text}")
-
-            global_time_offset += page_dur
-
-        ass_content = ass_header + "\n".join(ass_events) + "\n"
-        return srt_content, ass_content
-
     # 5. 音畫直接合成最終影片 (Direct FFmpeg Synthesis)
     print("\n--- 5. 直接由 FFmpeg 極速合成影片 ---")
     final_output = "簡報影片.mp4"
@@ -310,6 +227,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     crf_val = os.environ.get("VIDEO_CRF", "23")
 
     srt_content, ass_content = generate_subtitles(sub_settings)
+    silent_project = bool(timings) and all(p.get("silent", False) for p in timings)
+    if not ass_content or (not srt_content and not silent_project):
+        raise RuntimeError("缺少可用字幕，請先確認口白與字幕時序資料。")
     temp_ass_path = renders_dir / "temp_subtitles.ass"
     if ass_content:
         with open(temp_ass_path, "w", encoding="utf-8") as f_ass:
@@ -352,13 +272,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         # 5.5 產生獨立 SRT 字幕檔案
         print("\n--- 5.5. 產生獨立 SRT 字幕檔案 ---")
-        if srt_content:
+        if srt_content or silent_project:
             try:
                 with open(output_path_srt, "w", encoding="utf-8") as f_srt:
                     f_srt.write(srt_content)
                 print(f"  ✓ 成功產生字幕檔：{output_path_srt}")
             except Exception as e:
-                print(f"  (產生 SRT 字幕檔失敗: {e})")
+                raise RuntimeError(f"產生 SRT 字幕檔失敗: {e}") from e
 
         # 5.6 壓制字幕生成內嵌字幕版影片 (使用 1080p 精確等比例 ASS)
         print("\n--- 5.6. 壓制字幕生成內嵌字幕影片 ---")
@@ -375,7 +295,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 subprocess.run(cmd_burn, check=True, cwd=str(renders_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print(f"  ✓ 成功產生內嵌字幕版影片：{output_path_embed}")
             except Exception as e:
-                print(f"  (壓制內嵌字幕影片失敗: {e})")
+                raise RuntimeError(f"壓制內嵌字幕影片失敗: {e}") from e
 
         print(f"\n🎉 恭喜！影片全部製作成功！")
         print(f"  輸出無字幕版：{os.path.abspath(output_path_clean)}")
@@ -411,13 +331,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         print(f"  ✓ 成功產生影片：{output_path}")
 
         print("\n--- 5.5. 產生獨立 SRT 字幕檔案 ---")
-        if srt_content:
+        if srt_content or silent_project:
             try:
                 with open(srt_path, "w", encoding="utf-8") as f_srt:
                     f_srt.write(srt_content)
                 print(f"  ✓ 成功產生字幕檔：{srt_path}")
             except Exception as e:
-                print(f"  (產生 SRT 字幕檔失敗: {e})")
+                raise RuntimeError(f"產生 SRT 字幕檔失敗: {e}") from e
 
         print(f"\n🎉 恭喜！影片製作成功！")
         print(f"  輸出路徑：{os.path.abspath(output_path)}")

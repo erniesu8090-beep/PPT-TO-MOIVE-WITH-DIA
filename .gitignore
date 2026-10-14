@@ -33,6 +33,8 @@ sound_source/*
 
 
 # Environment & Temp files
+.venv/
+.playwright-browsers/
 .env
 .DS_Store
 Thumbs.db
